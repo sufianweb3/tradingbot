@@ -372,6 +372,74 @@ test("cooling is reported with a remaining time and a block reason", async () =>
   }
 });
 
+test("re-entry delay in minutes blocks only the same coin", () => {
+  const engine = makeEngine({
+    allocationPercent: 20,
+    reenterEnabled: true,
+    reenterDelayMin: 30,
+  });
+  try {
+    assert.equal(engine.state.settings.cooldownSec, 1800);
+    const btc = open(engine, "BTC");
+    engine._closePosition(btc, 100, "test close");
+    assert.equal(engine._isCooling("BTC"), true);
+    assert.ok(engine._coolingRemainingSec("BTC") > 1790);
+    assert.equal(engine._isCooling("ETH"), false, "other coins are not delayed");
+    assert.ok(open(engine, "ETH"), "ETH can open while BTC is delayed");
+    assert.equal(open(engine, "BTC"), null, "BTC cannot re-enter during the delay");
+    assert.ok(engine.state.meta.reentryBlocks.BTC > 0, "close time is persisted");
+  } finally {
+    engine.destroy();
+  }
+});
+
+test("re-entry delay survives a server restart", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "oi-bot-restart-"));
+  const engine = new Engine({ dataDir: dir });
+  try {
+    engine.state = createInitialState({
+      totalFund: 500,
+      allocationPercent: 20,
+      reenterEnabled: true,
+      reenterDelayMin: 30,
+    });
+    const pos = open(engine, "BTC");
+    engine._closePosition(pos, 100, "test close");
+    engine.store.save(engine.state);
+    engine.store.flush();
+  } finally {
+    engine.destroy();
+  }
+
+  const restarted = new Engine({ dataDir: dir });
+  try {
+    assert.ok(restarted._coolingRemainingSec("BTC") > 1700);
+    assert.equal(restarted._isCooling("BTC"), true);
+  } finally {
+    restarted.destroy();
+  }
+});
+
+test("turning the re-entry switch off removes the delay immediately", () => {
+  const engine = makeEngine({ allocationPercent: 20, reenterDelayMin: 30 });
+  try {
+    const pos = open(engine, "BTC");
+    engine._closePosition(pos, 100, "test close");
+    assert.equal(engine._isCooling("BTC"), false, "off by default");
+
+    engine.updateSettings({ reenterEnabled: true });
+    assert.equal(engine.state.settings.cooldownSec, 1800);
+    assert.equal(engine._isCooling("BTC"), true, "past close time counts once enabled");
+
+    engine.updateSettings({ reenterEnabled: false });
+    assert.equal(engine.state.settings.cooldownSec, 0);
+    assert.equal(engine._isCooling("BTC"), false);
+    assert.ok(open(engine, "BTC"), "re-entry is allowed again");
+  } finally {
+    engine.destroy();
+  }
+});
+
 test("price loop schedules nothing while flat and starts when a position opens", () => {
   const engine = makeEngine();
   const scheduled = [];

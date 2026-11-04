@@ -158,9 +158,12 @@
             <label class="field"><span>Max trades (0 = unlimited)</span><input type="number" min="0" step="1" data-setting="maxTrades"></label>
             <label class="field"><span>Scan interval (sec)</span><input type="number" min="10" max="3600" step="1" data-setting="scanIntervalSec"></label>
             <label class="field"><span>Price refresh (ms)</span><input type="number" min="500" max="60000" step="100" data-setting="priceRefreshMs"></label>
-            <label class="field"><span>Re-entry cooldown (sec, 0 = right away)</span><input type="number" min="0" max="86400" step="1" data-setting="cooldownSec"><em id="cooldownHint" class="field-hint"></em></label>
             <label class="field"><span>Taker fee % / side</span><input type="number" min="0" max="2" step="0.01" data-setting="feePercent"></label>
             <label class="field"><span>Slippage % / side</span><input type="number" min="0" max="5" step="0.01" data-setting="slippagePercent"></label>
+          </div>
+          <div class="toggle-line" style="margin-top:10px">
+            <label class="switch-row"><span class="switch"><input type="checkbox" data-setting="reenterEnabled"><i></i></span><span>Re-enter trade (same coin)</span></label>
+            <label class="field inline"><span>Delay (minutes)</span><input type="number" min="0" max="10080" step="1" data-setting="reenterDelayMin"><em id="reenterHint" class="field-hint"></em></label>
           </div>
           <div class="venue-box">
             <div class="venue-head"><span>Price venues</span><span id="venueStatus" class="venue-status">—</span></div>
@@ -282,8 +285,11 @@
 
       <section class="panel">
         <div class="panel-head">
-          <div><h2>Activity log</h2><p class="panel-sub">Newest first · last 80 events</p></div>
-          <button id="btnClearLogs" class="btn small ghost" type="button">Clear view</button>
+          <div><h2>Activity log</h2><p class="panel-sub">Newest first · last 80 events · full log + collected trade data available for download</p></div>
+          <div class="scanner-tools">
+            <button id="btnDownloadLogs" class="btn small ghost" type="button">Download logs</button>
+            <button id="btnClearLogs" class="btn small ghost" type="button">Clear view</button>
+          </div>
         </div>
         <div id="logsList" class="logs"></div>
       </section>

@@ -264,6 +264,18 @@ export class Engine {
   updateSettings(patch = {}) {
     const previous = this.state.settings;
     const clean = { ...patch };
+    // Older clients only know `cooldownSec`; translate it into the explicit
+    // re-entry switch so the dashboard and engine always agree.
+    if (
+      Object.prototype.hasOwnProperty.call(clean, "cooldownSec") &&
+      !Object.prototype.hasOwnProperty.call(clean, "reenterEnabled") &&
+      !Object.prototype.hasOwnProperty.call(clean, "reenterDelayMin")
+    ) {
+      const sec = Math.max(0, toNum(clean.cooldownSec, 0) ?? 0);
+      clean.reenterEnabled = sec > 0;
+      clean.reenterDelayMin = sec / 60;
+    }
+    delete clean.cooldownSec;
     let keyChange = null;
     if (Object.prototype.hasOwnProperty.call(clean, "coinglassApiKey")) {
       const raw = clean.coinglassApiKey;
@@ -614,9 +626,12 @@ export class Engine {
   }
 
   _coolingRemainingSec(symbol) {
-    const last = this._cooldowns.get(symbol);
+    const cooldownSec = toNum(this.state.settings.cooldownSec, 0);
+    if (!(cooldownSec > 0)) return 0;
+    const stored = toNum(this.state.meta?.reentryBlocks?.[symbol], 0) ?? 0;
+    const last = Math.max(this._cooldowns.get(symbol) || 0, stored);
     if (!last) return 0;
-    const left = last + toNum(this.state.settings.cooldownSec, 0) * 1000 - now();
+    const left = last + cooldownSec * 1000 - now();
     return left > 0 ? Math.ceil(left / 1000) : 0;
   }
 
@@ -880,7 +895,7 @@ export class Engine {
       if (result.qualified > 0 && result.opened === 0 && now() - this._lastNoMarginLog > 30000) {
         this._lastNoMarginLog = now();
         const parts = [];
-        if (blocked.cooling) parts.push(`${blocked.cooling} cooling (${coolingList.slice(0, 4).join(", ")})`);
+        if (blocked.cooling) parts.push(`${blocked.cooling} in re-entry delay (${coolingList.slice(0, 4).join(", ")})`);
         for (const key of ["stale", "no-feed", "coin-cap", "max-open", "no-margin", "excluded", "no-price", "no-size"]) {
           if (blocked[key]) parts.push(`${blocked[key]} ${key}`);
         }
@@ -1294,8 +1309,11 @@ export class Engine {
     pos.status = "closed";
     this.state.trades.push(trade);
     this.state.positions = this.state.positions.filter((p) => p.id !== pos.id);
-    this._cooldowns.set(pos.symbol, now());
-    this.state.meta.lastCloseAt = now();
+    const closedAt = now();
+    this._cooldowns.set(pos.symbol, closedAt);
+    if (!this.state.meta.reentryBlocks) this.state.meta.reentryBlocks = {};
+    this.state.meta.reentryBlocks[pos.symbol] = closedAt;
+    this.state.meta.lastCloseAt = closedAt;
 
     this.log(
       pnlNet >= 0 ? "info" : "warn",
@@ -1304,6 +1322,13 @@ export class Engine {
         2
       )} (${round(roe, 2)}% ROE) · fees $${round(pos.entryFee + pos.exitFees, 2)}`
     );
+    const reentryDelay = toNum(this.state.settings.cooldownSec, 0);
+    if (reentryDelay > 0) {
+      this.log(
+        "info",
+        `${pos.symbol} re-entry delay: no new ${pos.symbol} trade for ${durationText(reentryDelay)}.`
+      );
+    }
 
     this._sampleEquity(true);
     this.save();

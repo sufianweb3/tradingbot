@@ -7,6 +7,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Engine } from "./src/engine.js";
+import { attachAiTradeLogger } from "./src/aiDataset.js";
+import { logExportFilename, streamBotLogExport } from "./src/logExport.js";
 import { renderCsv, renderJson, renderReport } from "./src/report.js";
 import { now, toNum } from "./src/util.js";
 
@@ -108,6 +110,15 @@ async function serveStatic(req, res, pathname) {
 const engine = new Engine({ dataDir: DATA_DIR });
 await engine.init();
 
+// Passive AI dataset logger. It only listens to engine events and reads
+// state; removing this block leaves the bot and its trading logic identical.
+let aiLogger = { dispose() {} };
+try {
+  aiLogger = attachAiTradeLogger(engine);
+} catch (err) {
+  console.warn(`[ai-dataset] disabled: ${err.message}`);
+}
+
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
   const { pathname } = url;
@@ -203,6 +214,34 @@ const server = http.createServer(async (req, res) => {
         const offset = toNum(url.searchParams.get("offset"), 0);
         const data = engine.getTrades({ limit, offset });
         return sendJson(res, 200, { ok: true, ...data });
+      }
+
+      if (method === "GET" && pathname === "/api/logs") {
+        const includeDataset = url.searchParams.get("dataset") !== "0";
+        const download = url.searchParams.get("download") !== "0";
+        const disp = download ? "attachment" : "inline";
+        res.writeHead(200, {
+          "content-type": "application/x-ndjson; charset=utf-8",
+          "content-disposition": `${disp}; filename="${logExportFilename()}"`,
+          "cache-control": "no-store",
+          "x-content-type-options": "nosniff",
+        });
+        try {
+          const chunks = streamBotLogExport(engine, {
+            datasetDir: aiLogger?.dir || null,
+            includeDataset,
+          });
+          for await (const chunk of chunks) {
+            if (res.destroyed) break;
+            if (!res.write(chunk)) {
+              await new Promise((resolve) => res.once("drain", resolve));
+            }
+          }
+        } catch (err) {
+          console.error("[logs]", err.message);
+        }
+        res.end();
+        return;
       }
 
       if (method === "GET" && pathname === "/api/report") {
@@ -310,6 +349,11 @@ server.listen(PORT, HOST, () => {
 
 function shutdown(signal) {
   console.log(`\n[server] ${signal} received, saving state...`);
+  try {
+    aiLogger.dispose();
+  } catch {
+    /* logger is passive; never block shutdown */
+  }
   engine.destroy();
   server.close(() => process.exit(0));
   setTimeout(() => process.exit(0), 1500).unref();

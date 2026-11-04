@@ -130,30 +130,32 @@ Trades are limited by free margin. Changing `maxOpenPositions` or `maxTrades`
 (0 = unlimited) can cap the run. When max trades is reached the bot pauses itself
 and the report is ready to download.
 
-### Repeat entries on the same coin
+### Re-entry on the same coin
 
 | Setting | Default | Meaning |
 | ------- | ------- | ------- |
 | Max positions per coin | 1 | `1` = classic one-at-a-time rule. Raise it to stack several entries into the same move (e.g. `3` while a coin dumps). |
-| Re-entry cooldown | 0 s | Wait after a close before the same coin may be traded again. `0` = trade again at the next scan if the filters still pass. |
+| Re-enter trade (same coin) | Off | Off = the coin may trade again at the next scan as soon as the filters pass after a close. On = the delay below applies. |
+| Delay (minutes) | 30 | When **Re-enter trade** is on, no new trade opens on that coin for this many minutes, counted from the close time. |
+
+The delay is per coin: closing BTC blocks only BTC, so ETH can be entered
+immediately. It is also applied to manual opens and survives a server restart
+(the last close per coin is stored in the state snapshot). Setting the delay to
+`0` while the switch is on behaves the same as off.
 
 Each entry is an independent position with its own SL/TP/trailing, so stacking
 `3` means three separate $250-margin entries (limited by free margin and
 `maxOpenPositions`). States created before this option existed are migrated from
-the old 300-second cooldown to `0`.
+the old 300-second cooldown to the off state.
 
 The **Qualified** tab only counts coins that can trade *right now*. A coin that
-passes the filters but is inside the cooldown appears in the **coins** tab with
-a `COOLING <time>` badge and a disabled trade button showing the remaining time.
-The scan log also says why nothing opened, e.g.:
+passes the filters but is inside its re-entry delay appears in the **coins** tab
+with a `RE-ENTRY <time>` badge and a disabled trade button showing the remaining
+time. The scan log also says why nothing opened, e.g.:
 
 ```
-Qualified: 2, opened 0 - 2 cooling (SXT (10h 58m), ARX (11h 3m)).
+Qualified: 2, opened 0 - 2 in re-entry delay (SXT (10h 58m), ARX (11h 3m)).
 ```
-
-The cooldown is in **seconds**, not milliseconds. A value like `40000` means
-**11 hours**, not 40 seconds — the settings field shows the human-readable
-equivalent (`= 11h 6m`) and turns amber above one hour.
 
 
 ### 4. Exits
@@ -390,6 +392,7 @@ All endpoints return JSON unless noted.
 | GET    | `/api/config`       | Settings, initial fund, stats |
 | GET    | `/api/trades`       | Paginated closed trades (`limit`, `offset`) |
 | GET    | `/api/report`       | HTML / CSV / JSON report (`format`, `download`) |
+| GET    | `/api/logs`         | Download bot activity log + collected dataset as JSONL (`download`, `dataset=0`) |
 | POST   | `/api/settings`     | Save settings (`{ settings: {...} }` or a flat object) |
 | POST   | `/api/coinglass/key`| Set `{ apiKey }` or clear `{ clear: true }` the CoinGlass key |
 | POST   | `/api/device/market`| Browser feed: `{ coins, merge, total, pages }` |
@@ -424,6 +427,75 @@ settings normalisation, report rendering, position sizing and engine close paths
 - **Reset** keeps your settings and clears trades/PnL/history.
 - Changing **Total fund** resets the paper account because the fund defines the
   run.
+
+---
+
+## AI trade dataset (passive logger)
+
+The local server attaches a read-only logger after the engine starts. It never
+changes filters, sizing, positions or execution; it only listens to the existing
+`trade` events and samples state once per second while a position is open.
+
+Each trade gets its own folder under `data/ai-dataset/`:
+
+```
+data/ai-dataset/
+  index.jsonl                      open/close index for quick discovery
+  <entry-time>_<symbol>_<side>_<id>/
+    trade.json                     settings, coin row, signal, plan, entry
+    ticks.jsonl                    one JSON line per second while open
+    events.jsonl                   open, partial, close and resume events
+    summary.json                   final PnL, ROE, exit reason and stats
+```
+
+What is recorded:
+
+- **Settings** at entry: every filter/timeframe, direction, sizing, leverage,
+  fees, slippage, TP/SL/trailing and max-position rule.
+- **Coin data** at entry: the exact screener row (`Coin`, price, OI 5m/15m/30m/
+  1h/4h, Volume 1h/4h, venue, signal, score, pass count) plus the raw CoinGlass
+  coin object (OI USD, volume USD, funding, 1h/24h price changes).
+- **Trade data**: margin, notional, quantity, leverage, fees, entry/signal price,
+  SL/TP1/TP max/liquidation levels, trailing settings and the signal checks.
+- **Price history**: every second from entry to close, including the exchange
+  quote, engine mark, stale/fallback flags, unrealized PnL/ROE, distances to
+  SL/TP and the live CoinGlass row for that coin.
+- **Outcome**: final trade object, exit reason, fees paid, PnL, ROE, duration
+  and account statistics after the close.
+
+Export everything into one JSONL file for AI processing:
+
+```bat
+npm.cmd run ai:export
+```
+
+The export is written to `data/ai-export/ai-trades-<timestamp>.jsonl` with a
+matching `.manifest.json`. Pass custom folders with
+`npm.cmd run ai:export -- <dataset-dir> <output-dir>`.
+
+The dashboard's **Download logs** button (Activity log panel) downloads the same
+kind of file without stopping the bot: bot activity log entries first, then the
+AI dataset (`ai-trade`, `ai-tick`, `ai-event`, `ai-summary`) as JSONL. The API
+equivalent is:
+
+```bat
+GET /api/logs?download=1
+GET /api/logs?download=1&dataset=0   :: activity log only
+```
+
+On the Cloudflare deployment the endpoint returns the activity log only, because
+Workers have no filesystem for the dataset folders.
+
+Environment variables (optional):
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `AI_TRADE_LOG` | `1` | Set to `0` to disable the logger completely |
+| `AI_DATASET_DIR` | `data/ai-dataset` | Where trade folders are written |
+| `AI_TRADE_INTERVAL_MS` | `1000` | Sampling interval (minimum 250 ms) |
+
+The logger is local-only. It is not attached in the Cloudflare Worker, where
+there is no filesystem; runtime state there remains in Durable Object storage.
 
 ---
 
@@ -506,8 +578,11 @@ src/coinglass.js       encrypted CoinGlass fetch/decrypt + official API client
 src/exchanges.js       multi-venue discovery, symbol resolution, quotes
 src/trading.js         pure filters, levels, PnL, stats, positionAction
 src/engine.js          scan loop, trade opening, position management, persistence
+src/aiDataset.js       passive AI trade dataset logger (observer only)
+src/logExport.js       streams activity log + dataset as one downloadable JSONL
 src/store.js           defaults, normalisation, JSON store
 src/report.js          HTML/CSV/JSON reports + SVG equity chart
+scripts/ai-export.mjs  streams the AI dataset into one JSONL file
 public/                dashboard (vanilla HTML/CSS/JS, no build step)
 test/                  node:test suites
 data/state.json        local runtime state (created on first run, git-ignored)

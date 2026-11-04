@@ -346,16 +346,21 @@ function updateDerived() {
   }
   note.classList.toggle("neg", mode !== "fixedQty" && margin > fund + 0.001);
 
-  const cdEl = $("#cooldownHint");
-  if (cdEl) {
-    const cd = num($('[data-setting="cooldownSec"]').value, 0);
-    if (cd <= 0) {
-      cdEl.textContent = "Re-entry is immediate.";
-      cdEl.classList.remove("neg");
+  const reenterEl = $("#reenterHint");
+  if (reenterEl) {
+    const on = Boolean($('[data-setting="reenterEnabled"]')?.checked);
+    const mins = Math.max(0, num($('[data-setting="reenterDelayMin"]')?.value, 0));
+    reenterEl.classList.remove("neg");
+    if (!on) {
+      reenterEl.textContent = "Off — coins can re-enter immediately after a close.";
+    } else if (mins <= 0) {
+      reenterEl.textContent = "Delay 0 = immediately after a close.";
     } else {
-      cdEl.textContent = `= ${humanDuration(cd)} after each close`;
-      cdEl.classList.toggle("neg", cd > 3600);
-      if (cd > 3600) cdEl.textContent += " — very long block";
+      reenterEl.textContent = `= no same-coin trade for ${humanDuration(mins * 60)} after a close.`;
+      if (mins > 1440) {
+        reenterEl.classList.add("neg");
+        reenterEl.textContent += " — very long block";
+      }
     }
   }
 
@@ -780,7 +785,7 @@ function qualifiedMarkets() {
       marketRoomForMore(m)
   );
 }
-/** Coins that pass the filters but are inside the re-entry cooldown. */
+/** Coins that pass the filters but are inside the re-entry delay. */
 function coolingMarkets() {
   return (state.markets || []).filter((m) => m.qualified && m.cooling);
 }
@@ -838,10 +843,10 @@ function renderMarkets() {
     let msg;
     if (state.tab === "qualified") {
       if (cooling.length) {
-        msg = `${cooling.length} coin(s) pass the filters but are cooling down after a recent trade: ${cooling
+        msg = `${cooling.length} coin(s) pass the filters but are waiting for their re-entry delay after a recent trade: ${cooling
           .slice(0, 4)
           .map((m) => `${m.symbol} (${humanDuration(m.coolingRemainingSec)})`)
-          .join(", ")}. Open the "coins" tab to see them, or set Re-entry cooldown to 0.`;
+          .join(", ")}. Open the "coins" tab to see them, or turn Re-enter trade off in Execution settings.`;
       } else {
         msg = state.meta.filtersConfigured
           ? "No coin currently passes every enabled filter. The bot will keep scanning."
@@ -871,7 +876,7 @@ function renderMarkets() {
         } else if (m.qualified && !m.tradable) {
           signal = `<span class="pass-pill no" title="No exchange price feed for this coin">NO FEED</span>`;
         } else if (m.cooling) {
-          signal = `<span class="pass-pill no" title="Re-entry cooldown">COOLING ${humanDuration(coolLeft)}</span>`;
+          signal = `<span class="pass-pill no" title="Re-entry delay">RE-ENTRY ${humanDuration(coolLeft)}</span>`;
         } else if (m.qualified && m.side) {
           signal = `<span class="side-tag ${esc(m.side)}">${esc(m.side)}</span>`;
           if (openCount > 0) signal += ` <span class="pass-pill ready">${openCount}/${perCoin}</span>`;
@@ -889,8 +894,8 @@ function renderMarkets() {
             blockShort = "No feed";
             blockText = "No exchange price feed for this coin.";
           } else if (m.cooling) {
-            blockShort = `Cool ${humanDuration(coolLeft)}`;
-            blockText = `Re-entry cooldown: ${humanDuration(coolLeft)} left. Set "Re-entry cooldown" to 0 to trade again immediately.`;
+            blockShort = `Delay ${humanDuration(coolLeft)}`;
+            blockText = `Re-entry delay: ${humanDuration(coolLeft)} left. Turn "Re-enter trade" off or lower the delay to trade again immediately.`;
           } else if (!roomForMore) {
             blockShort = `Max ${perCoin}`;
             blockText = `Max positions per coin (${perCoin}) already open.`;
@@ -1769,7 +1774,7 @@ async function manualOpen(symbol, button) {
       "coin-not-found": "Coin is not in the current CoinGlass table.",
       "no-price-feed": "No exchange price feed available for this coin.",
       "max-open": "Max open positions reached.",
-      "cooling": `Re-entry cooldown: ${humanDuration(payload.remainingSec)} left. Set "Re-entry cooldown" to 0 to re-enter immediately.`,
+      "cooling": `Re-entry delay: ${humanDuration(payload.remainingSec)} left. Turn "Re-enter trade" off or lower the delay to re-enter immediately.`,
     };
     let sub = map[err.message] || err.message;
     if (err.message === "cannot-open" && payload.reason) {
@@ -1777,7 +1782,7 @@ async function manualOpen(symbol, button) {
         "no-margin": `Not enough free margin — needs ${money(payload.requiredMargin || 0)}, ${money(payload.available || 0)} available.`,
         "coin-cap": "Max positions per coin already open.",
         "max-open": "Max open positions reached.",
-        "cooling": "Still in the re-entry cooldown.",
+        "cooling": "Still in the re-entry delay.",
         "no-feed": "No exchange price feed for this coin.",
         "stale": "CoinGlass data is stale.",
         "no-size": "Position size rounds to zero — check the sizing settings.",
@@ -1914,6 +1919,10 @@ $("#btnLoadMore").addEventListener("click", () => refreshTrades(true));
 $("#btnClearLogs").addEventListener("click", () => {
   state.logCutoff = Date.now();
   renderLogs();
+});
+$("#btnDownloadLogs").addEventListener("click", () => {
+  window.location.href = "/api/logs?download=1";
+  toast("Preparing log download", "info", "Includes bot activity logs plus collected trade dataset records.");
 });
 
 $("#marketsBody").addEventListener("click", (e) => {

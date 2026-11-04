@@ -195,6 +195,39 @@ export class EngineV3DO {
         return json(200, { ok: true, ...this.engine.getTrades({ limit, offset }) });
       }
 
+      if (method === "GET" && pathname === "/api/logs") {
+        // The Worker has no filesystem, so the AI trade dataset is only
+        // available from the local server. Still export the activity log.
+        const at = now();
+        const stampText = new Date(at)
+          .toISOString()
+          .replace(/[:.]/g, "-")
+          .replace("T", "_")
+          .slice(0, 19);
+        const records = [
+          {
+            record: "meta",
+            schema: "oi-bot-log-export/v1",
+            version: 1,
+            createdAt: new Date(at).toISOString(),
+            generatedAt: at,
+            app: "oi-sniper",
+            initialFund: this.engine.state.initialFund,
+            settings: this.engine.publicSettings(),
+            stats: this.engine.getStats(),
+            meta: this.engine.getMeta(),
+          },
+        ];
+        for (const entry of this.engine.state.logs || []) {
+          records.push({ record: "log", ...entry });
+        }
+        const body = records.map((r) => JSON.stringify(r)).join("\n") + "\n";
+        const disp = url.searchParams.get("download") !== "0" ? "attachment" : "inline";
+        return text(200, body, "application/x-ndjson; charset=utf-8", {
+          "content-disposition": `${disp}; filename="oi-bot-logs-${stampText}.jsonl"`,
+        });
+      }
+
       if (method === "GET" && pathname === "/api/report") {
         const format = (url.searchParams.get("format") || "html").toLowerCase();
         const download = url.searchParams.get("download") !== "0";

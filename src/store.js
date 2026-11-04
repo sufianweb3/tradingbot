@@ -59,8 +59,13 @@ export const DEFAULT_SETTINGS = {
   maxPositionsPerCoin: 1,
   scanIntervalSec: 30,
   priceRefreshMs: 3000,
-  // Seconds before the same coin may be traded again after a close.
-  // 0 = re-enter at the next scan as soon as the filters pass again.
+  // Re-entry on the same coin after a position closes. When enabled, the coin
+  // is blocked for `reenterDelayMin` minutes from the close. When disabled it
+  // may trade again at the next scan as soon as the filters pass.
+  reenterEnabled: false,
+  reenterDelayMin: 30,
+  // Derived from the two settings above (seconds). Kept because the engine and
+  // older clients use it as the single effective cooldown value.
   cooldownSec: 0,
   feePercent: 0.05,
   slippagePercent: 0.02,
@@ -84,6 +89,7 @@ const RANGES = {
   maxPositionsPerCoin: [1, 50],
   scanIntervalSec: [10, 3600],
   priceRefreshMs: [500, 60000],
+  reenterDelayMin: [0, 10080],
   cooldownSec: [0, 86400],
   feePercent: [0, 2],
   slippagePercent: [0, 5],
@@ -110,7 +116,20 @@ function normalizeFilterList(input, defaults, allowedKeys) {
 }
 
 export function normalizeSettings(input = {}) {
-  const s = deepMerge(DEFAULT_SETTINGS, input || {});
+  const inputObj = input && typeof input === "object" ? input : {};
+  const s = deepMerge(DEFAULT_SETTINGS, inputObj);
+
+  // Backward compatibility: versions before the explicit re-entry switch only
+  // stored `cooldownSec`. Translate it once when the new fields are absent.
+  const hasReenterFields =
+    Object.prototype.hasOwnProperty.call(inputObj, "reenterEnabled") ||
+    Object.prototype.hasOwnProperty.call(inputObj, "reenterDelayMin");
+  if (!hasReenterFields && Object.prototype.hasOwnProperty.call(inputObj, "cooldownSec")) {
+    const legacySec = clamp(toNum(inputObj.cooldownSec, 0) ?? 0, 0, 86400);
+    s.reenterEnabled = legacySec > 0;
+    s.reenterDelayMin = legacySec > 0 ? legacySec / 60 : DEFAULT_SETTINGS.reenterDelayMin;
+  }
+
   for (const [key, [min, max]] of Object.entries(RANGES)) {
     const n = toNum(s[key]);
     s[key] = clamp(n === null ? DEFAULT_SETTINGS[key] : n, min, max);
@@ -126,6 +145,10 @@ export function normalizeSettings(input = {}) {
   s.trailingDistancePercent = Math.round(s.trailingDistancePercent * 100) / 100;
   s.feePercent = Math.round(s.feePercent * 1000) / 1000;
   s.slippagePercent = Math.round(s.slippagePercent * 1000) / 1000;
+  s.reenterDelayMin = Math.round(s.reenterDelayMin * 100) / 100;
+  s.reenterEnabled = Boolean(s.reenterEnabled);
+  s.cooldownSec =
+    s.reenterEnabled && s.reenterDelayMin > 0 ? Math.round(s.reenterDelayMin * 60) : 0;
 
   s.sizingMode = ["allocation", "fixedMargin", "fixedQty"].includes(s.sizingMode)
     ? s.sizingMode
@@ -190,6 +213,9 @@ export function createInitialState(settingsInput = {}) {
       scanCount: 0,
       totalOpened: 0,
       lastOpenAt: null,
+      // Last close time per coin, used to enforce the re-entry delay across
+      // server restarts. Cleared by a strategy reset.
+      reentryBlocks: {},
     },
   };
 }
@@ -201,9 +227,15 @@ export function sanitizeLoadedState(input) {
   // Migration: states written before per-coin stacking existed carry the old
   // 5-minute re-entry cooldown. Treat it as the old default and drop it, so a
   // coin can trade again as soon as the filters pass. A state that already has
-  // maxPositionsPerCoin keeps whatever cooldown the user chose.
+  // maxPositionsPerCoin keeps whatever re-entry delay the user chose.
   if (input?.settings && input.settings.maxPositionsPerCoin === undefined) {
-    if (Number(state.settings.cooldownSec) === 300) state.settings.cooldownSec = 0;
+    const hasReenterFields =
+      input.settings.reenterEnabled !== undefined || input.settings.reenterDelayMin !== undefined;
+    if (!hasReenterFields && Number(input.settings.cooldownSec) === 300) {
+      state.settings.reenterEnabled = false;
+      state.settings.reenterDelayMin = DEFAULT_SETTINGS.reenterDelayMin;
+      state.settings.cooldownSec = 0;
+    }
   }
   state.initialFund = toNum(input?.initialFund);
   if (state.initialFund === null || state.initialFund <= 0) state.initialFund = state.settings.totalFund;
@@ -217,6 +249,24 @@ export function sanitizeLoadedState(input) {
   if (!state.equityCurve.length) state.equityCurve = base.equityCurve;
   state.logs = Array.isArray(input?.logs) ? input.logs.slice(-250) : [];
   state.meta = { ...base.meta, ...(input?.meta || {}) };
+  // Keep the last close per coin so a restart cannot bypass the delay. Rebuild
+  // it from trade history when an older state has no map.
+  const blocks = {};
+  const storedBlocks =
+    input?.meta && input.meta.reentryBlocks && typeof input.meta.reentryBlocks === "object"
+      ? input.meta.reentryBlocks
+      : {};
+  for (const [symbol, at] of Object.entries(storedBlocks)) {
+    const t = toNum(at);
+    if (symbol && t !== null && t > 0) blocks[String(symbol).toUpperCase()] = t;
+  }
+  for (const t of state.trades) {
+    const at = toNum(t.exitTime);
+    if (t.symbol && at !== null && at > (blocks[String(t.symbol).toUpperCase()] || 0)) {
+      blocks[String(t.symbol).toUpperCase()] = at;
+    }
+  }
+  state.meta.reentryBlocks = blocks;
   // Never auto-resume after a restart: opening trades unexpectedly is worse.
   state.meta.running = false;
   state.meta.nextScanAt = null;
