@@ -1,0 +1,10 @@
+{
+  "mcp": {
+    "servers": {
+      "cloudflare-api": {
+        "type": "remote",
+        "url": "https://mcp.cloudflare.com/mcp"
+      }
+    }
+  }
+}

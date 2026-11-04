@@ -1,0 +1,303 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>OI Sniper — Paper Trading Bot</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%230b1220'/%3E%3Cpath d='M14 40l10-12 9 7 15-17' fill='none' stroke='%2316d39a' stroke-width='5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<div class="bg-glow" aria-hidden="true"></div>
+<div class="app">
+
+  <div id="serverNotice" class="server-notice hidden"></div>
+
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 40 40" width="26" height="26"><path d="M6 27l8-10 7 6L34 8" fill="none" stroke="currentColor" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"/><circle cx="33.5" cy="8" r="2.6" fill="currentColor"/></svg>
+      </div>
+      <div class="brand-text">
+        <h1>OI Sniper</h1>
+        <span>CoinGlass OI + Volume · paper engine</span>
+      </div>
+      <span class="paper-badge">PAPER</span>
+    </div>
+
+    <div class="top-status">
+      <div id="cgPill" class="status-pill connecting" title="Checking CoinGlass connection…"><span class="dot"></span><span id="cgPillText">CoinGlass: connecting…</span></div>
+      <div id="statusPill" class="status-pill paused"><span class="dot"></span><span id="statusText">Paused</span></div>
+      <div class="scan-meta">
+        <span id="scanInfo">Waiting for data…</span>
+        <span class="sep">·</span>
+        <span id="clock">--:--:--</span>
+      </div>
+    </div>
+
+    <div class="top-actions">
+      <button id="btnToggle" class="btn primary" type="button"><span id="toggleIcon">▶</span> <span id="toggleText">Start bot</span></button>
+      <button id="btnScan" class="btn" type="button">Scan now</button>
+      <button id="btnReport" class="btn" type="button">Report</button>
+      <a id="btnCsv" class="btn ghost" href="/api/report?format=csv&download=1">CSV</a>
+      <button id="btnReset" class="btn danger-ghost" type="button">Reset</button>
+    </div>
+  </header>
+
+  <section class="kpis" id="kpis">
+    <article class="kpi accent-green"><div class="kpi-label">Equity</div><div class="kpi-value" id="kpiEquity">$0.00</div><div class="kpi-sub" id="kpiEquitySub">start $0.00</div></article>
+    <article class="kpi accent-blue"><div class="kpi-label">Total P/L</div><div class="kpi-value" id="kpiPnl">$0.00</div><div class="kpi-sub" id="kpiPnlSub">0.00% return</div></article>
+    <article class="kpi accent-amber"><div class="kpi-label">Open P/L</div><div class="kpi-value" id="kpiOpen">$0.00</div><div class="kpi-sub" id="kpiOpenSub">0 positions</div></article>
+    <article class="kpi"><div class="kpi-label">Win rate</div><div class="kpi-value" id="kpiWinrate">0%</div><div class="kpi-sub" id="kpiWinrateSub">0W / 0L</div></article>
+    <article class="kpi"><div class="kpi-label">Profit factor</div><div class="kpi-value" id="kpiPf">—</div><div class="kpi-sub" id="kpiPfSub">no closed trades</div></article>
+    <article class="kpi"><div class="kpi-label">Max drawdown</div><div class="kpi-value" id="kpiDd">$0.00</div><div class="kpi-sub" id="kpiDdSub">0.00%</div></article>
+    <article class="kpi"><div class="kpi-label">Trades</div><div class="kpi-value" id="kpiTrades">0</div><div class="kpi-sub" id="kpiTradesSub">unlimited</div></article>
+    <article class="kpi"><div class="kpi-label">Fees</div><div class="kpi-value" id="kpiFees">$0.00</div><div class="kpi-sub" id="kpiFeesSub">incl. open</div></article>
+  </section>
+
+  <div id="banner" class="banner hidden">
+    <span class="banner-icon">!</span>
+    <div id="bannerText"></div>
+  </div>
+
+  <div class="layout">
+    <aside class="panel settings-panel">
+      <div class="panel-head sticky">
+        <div>
+          <h2>Strategy settings</h2>
+          <p class="panel-sub">Everything is saved to <code>data/state.json</code></p>
+        </div>
+        <span id="dirtyBadge" class="dirty hidden">unsaved</span>
+      </div>
+
+      <div class="panel-body settings-body">
+
+        <section class="setting-group">
+          <div class="group-head"><h3>Capital &amp; sizing</h3><span class="hint">How much paper capital each trade uses</span></div>
+          <div class="field-grid">
+            <label class="field"><span>Total fund (USDT)</span><input type="number" min="1" step="1" data-setting="totalFund"></label>
+            <label class="field"><span>Leverage</span><input type="number" min="1" max="200" step="1" data-setting="leverage"></label>
+            <label class="field"><span>Position sizing</span>
+              <select data-setting="sizingMode">
+                <option value="allocation">% of fund</option>
+                <option value="fixedMargin">Fixed margin ($)</option>
+                <option value="fixedQty">Fixed quantity (coins)</option>
+              </select>
+            </label>
+            <label class="field" data-show="allocation"><span>Per trade (% of fund)</span><input type="number" min="0.1" max="100" step="0.1" data-setting="allocationPercent"></label>
+            <label class="field" data-show="allocation"><span>Allocation base</span>
+              <select data-setting="allocationBase"><option value="initial">Initial fund</option><option value="equity">Current equity</option></select>
+            </label>
+            <label class="field" data-show="fixedMargin"><span>Margin per trade ($)</span><input type="number" min="0.1" step="1" data-setting="fixedMargin"></label>
+            <label class="field" data-show="fixedQty"><span>Quantity per trade</span><input type="number" min="0" step="any" data-setting="fixedQty"></label>
+          </div>
+          <p class="note" id="sizingNote"></p>
+        </section>
+
+        <section class="setting-group">
+          <div class="group-head"><h3>Exit plan</h3><span class="hint">SL / TP in ROE (% of margin) unless changed</span></div>
+          <div class="field-grid">
+            <label class="field"><span>Risk unit</span>
+              <select data-setting="riskMode"><option value="roe">ROE — % of margin</option><option value="price">Price — % of coin</option></select>
+            </label>
+            <label class="field"><span>Stop loss %</span><input type="number" min="0.01" step="0.05" data-setting="slPercent"></label>
+            <label class="field"><span>TP1 %</span><input type="number" min="0.01" step="0.05" data-setting="tp1Percent"></label>
+            <label class="field"><span>TP1 close %</span><input type="number" min="1" max="100" step="1" data-setting="tp1ClosePercent"></label>
+            <label class="field"><span>Max TP %</span><input type="number" min="0.01" step="1" data-setting="tpMaxPercent"></label>
+            <label class="field"><span>Trailing distance %</span><input type="number" min="0.01" step="0.05" data-setting="trailingDistancePercent"></label>
+          </div>
+          <div class="toggle-line">
+            <label class="switch-row"><span class="switch"><input type="checkbox" data-setting="trailingEnabled"><i></i></span><span>Trailing stop</span></label>
+            <label class="field inline"><span>Trail starts</span><select data-setting="trailingStart"><option value="tp1">After TP1</option><option value="immediate">Immediately</option></select></label>
+          </div>
+        </section>
+
+        <section class="setting-group">
+          <div class="group-head"><h3>CoinGlass data source</h3><span class="hint">API key is optional</span></div>
+          <label class="field full"><span>Official API key <em class="muted">(empty = scrape the website)</em></span>
+            <input id="cgApiKey" type="password" placeholder="Paste your CoinGlass API key…" autocomplete="off" spellcheck="false">
+          </label>
+          <div class="foot-row" style="margin-top:8px">
+            <button id="btnSaveCgKey" class="btn ghost" type="button">Save key</button>
+            <button id="btnClearCgKey" class="btn ghost" type="button">Clear key</button>
+          </div>
+          <p class="note" id="cgKeyState">No API key — scraping the public website.</p>
+        </section>
+
+        <section class="setting-group">
+          <div class="group-head"><h3>Signal — open interest</h3><span class="hint">All enabled filters must pass</span></div>
+          <div class="filter-head"><span>Use</span><span>Timeframe</span><span>Op</span><span>Threshold</span><span class="right">Market max</span></div>
+          <div id="oiFilters" class="filter-list"></div>
+        </section>
+
+        <section class="setting-group">
+          <div class="group-head"><h3>Signal — volume</h3><span class="hint">Percentage change, not USD</span></div>
+          <div class="filter-head"><span>Use</span><span>Timeframe</span><span>Op</span><span>Threshold</span><span class="right">Market max</span></div>
+          <div id="volFilters" class="filter-list"></div>
+        </section>
+
+        <section class="setting-group">
+          <div class="group-head"><h3>Direction &amp; universe</h3><span class="hint">Which coins are eligible</span></div>
+          <div class="field-grid">
+            <label class="field"><span>Trade direction</span>
+              <select data-setting="direction"><option value="auto">Auto (from filter operators)</option><option value="long">Long only</option><option value="short">Short only</option></select>
+            </label>
+            <label class="field"><span>Max open positions (0 = no cap)</span><input type="number" min="0" step="1" data-setting="maxOpenPositions"></label>
+            <label class="field"><span>Max positions per coin</span><input type="number" min="1" max="50" step="1" data-setting="maxPositionsPerCoin"></label>
+            <label class="field"><span>Minimum OI (USD)</span><input type="number" min="0" step="1000" data-setting="minOiUsd"></label>
+            <label class="field"><span>Minimum 24h volume (USD)</span><input type="number" min="0" step="1000" data-setting="minVolUsd24h"></label>
+            <label class="field full"><span>Excluded symbols (comma separated)</span><input type="text" data-setting="excludeSymbols" spellcheck="false"></label>
+          </div>
+          <label class="switch-row" style="margin-top:10px"><span class="switch"><input type="checkbox" data-setting="allowCoinglassPrice"><i></i></span><span>Use CoinGlass price if no exchange feed exists</span></label>
+        </section>
+
+        <section class="setting-group">
+          <div class="group-head"><h3>Execution</h3><span class="hint">Paper fill assumptions &amp; scan loop</span></div>
+          <div class="field-grid">
+            <label class="field"><span>Max trades (0 = unlimited)</span><input type="number" min="0" step="1" data-setting="maxTrades"></label>
+            <label class="field"><span>Scan interval (sec)</span><input type="number" min="10" max="3600" step="1" data-setting="scanIntervalSec"></label>
+            <label class="field"><span>Price refresh (ms)</span><input type="number" min="500" max="60000" step="100" data-setting="priceRefreshMs"></label>
+            <label class="field"><span>Re-entry cooldown (sec, 0 = right away)</span><input type="number" min="0" max="86400" step="1" data-setting="cooldownSec"><em id="cooldownHint" class="field-hint"></em></label>
+            <label class="field"><span>Taker fee % / side</span><input type="number" min="0" max="2" step="0.01" data-setting="feePercent"></label>
+            <label class="field"><span>Slippage % / side</span><input type="number" min="0" max="5" step="0.01" data-setting="slippagePercent"></label>
+          </div>
+          <div class="venue-box">
+            <div class="venue-head"><span>Price venues</span><span id="venueStatus" class="venue-status">—</span></div>
+            <div id="venueToggles" class="venue-toggles"></div>
+            <p class="note">The bot picks the venue with the deepest 24h volume for each coin and falls back to another if a feed fails.</p>
+          </div>
+          <label class="switch-row" style="margin-top:10px"><span class="switch"><input type="checkbox" data-setting="autoStart"><i></i></span><span>Auto-start bot when the server starts</span></label>
+        </section>
+
+      </div>
+
+      <div class="panel-foot sticky">
+        <button id="btnSave" class="btn primary block" type="button">Save &amp; apply</button>
+        <div class="foot-row">
+          <button id="btnRevert" class="btn ghost" type="button">Revert</button>
+          <button id="btnReset2" class="btn danger-ghost" type="button">Reset strategy</button>
+        </div>
+        <p class="note center">Changing the total fund resets the paper account.</p>
+      </div>
+    </aside>
+
+    <main class="content">
+
+      <section class="panel">
+        <div class="panel-head">
+          <div>
+            <h2>CoinGlass live data</h2>
+            <p class="panel-sub" id="cgSub">Crypto only · waiting for the first scrape…</p>
+            <p id="cgDevice" class="cg-device hidden"></p>
+          </div>
+          <div class="cg-tools">
+            <span id="cgBadge" class="status-pill connecting"><span class="dot"></span><span id="cgBadgeText">Connecting</span></span>
+            <select id="cgSort" class="cg-select" title="Sort the live feed">
+              <option value="abs">Biggest OI 5m move</option>
+              <option value="oiDesc">OI 5m high → low</option>
+              <option value="oiAsc">OI 5m low → high</option>
+              <option value="volDesc">Volume 1h high → low</option>
+              <option value="volAsc">Volume 1h low → high</option>
+            </select>
+            <input id="cgSearch" class="search" type="search" placeholder="Search coin…" autocomplete="off">
+          </div>
+        </div>
+        <div class="table-wrap cg-wrap">
+          <table class="data-table cg-table">
+            <thead>
+              <tr><th>Coin</th><th class="num">OI 5m %</th><th class="num">Volume 1h %</th></tr>
+            </thead>
+            <tbody id="cgBody"></tbody>
+          </table>
+        </div>
+        <div class="table-foot"><span id="cgFoot">—</span><span id="cgUpdated" class="countdown"></span></div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <div><h2>Open positions</h2><p class="panel-sub" id="positionsSub">No open positions</p></div>
+          <button id="btnCloseAll" class="btn small danger-ghost" type="button">Close all</button>
+        </div>
+        <div id="positionsBody" class="positions"></div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head scanner-head">
+          <div>
+            <h2>Live scanner</h2>
+            <p class="panel-sub" id="scannerSub">Loading CoinGlass…</p>
+          </div>
+          <div class="scanner-tools">
+            <div class="tabs" id="marketTabs">
+              <button class="tab active" data-tab="qualified" type="button">Qualified <b id="tabQualified">0</b></button>
+              <button class="tab" data-tab="near" type="button">Near miss <b id="tabNear">0</b></button>
+              <button class="tab" data-tab="all" type="button">All <b id="tabAll">0</b></button>
+            </div>
+            <input id="marketSearch" class="search" type="search" placeholder="Search coin…" autocomplete="off">
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="data-table markets-table">
+            <thead>
+              <tr>
+                <th>Coin</th><th>Price</th>
+                <th class="num">OI 5m</th><th class="num">OI 15m</th><th class="num">OI 30m</th><th class="num">OI 1h</th><th class="num">OI 4h</th>
+                <th class="num">Vol 1h</th><th class="num">Vol 4h</th>
+                <th>Venue</th><th>Signal</th><th></th>
+              </tr>
+            </thead>
+            <tbody id="marketsBody"></tbody>
+          </table>
+        </div>
+        <div class="table-foot"><span id="marketFoot">—</span><span id="scanCountdown" class="countdown"></span></div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <div><h2>Fund PnL</h2><p class="panel-sub" id="chartSub">Equity curve · paper account</p></div>
+          <div class="chart-legend"><span class="legend-dot green"></span>Equity <span class="legend-dash"></span>Initial fund</div>
+        </div>
+        <div class="chart-wrap"><canvas id="equityChart"></canvas><div id="chartTooltip" class="chart-tooltip hidden"></div></div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <div><h2>Trade history</h2><p class="panel-sub" id="historySub">0 closed trades</p></div>
+          <div class="scanner-tools">
+            <input id="tradeSearch" class="search" type="search" placeholder="Filter symbol / reason…" autocomplete="off">
+            <button id="btnTradesCsv" class="btn small ghost" type="button">Export CSV</button>
+          </div>
+        </div>
+        <div class="table-wrap mid">
+          <table class="data-table">
+            <thead>
+              <tr><th>Closed</th><th>Coin</th><th>Side</th><th>Entry → Exit</th><th class="num">Qty</th><th class="num">Margin</th><th class="num">Net P/L</th><th class="num">ROE</th><th class="num">Fees</th><th>Reason</th><th class="num">Hold</th><th>Venue</th></tr>
+            </thead>
+            <tbody id="tradesBody"></tbody>
+          </table>
+        </div>
+        <div class="table-foot"><span id="tradesFoot">—</span><button id="btnLoadMore" class="btn small ghost hidden" type="button">Load more</button></div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <div><h2>Activity log</h2><p class="panel-sub">Newest first · last 80 events</p></div>
+          <button id="btnClearLogs" class="btn small ghost" type="button">Clear view</button>
+        </div>
+        <div id="logsList" class="logs"></div>
+      </section>
+
+    </main>
+  </div>
+
+  <footer class="page-foot">
+    <span>OI Sniper is a <strong>paper-trading simulator</strong>. No exchange orders are placed. Markets are risky; this is not financial advice.</span>
+    <span id="feedFoot">—</span>
+  </footer>
+</div>
+
+<div id="toasts" class="toasts" aria-live="polite"></div>
+<script type="module" src="/app.js"></script>
+</body>
+</html>
