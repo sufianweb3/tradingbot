@@ -626,7 +626,17 @@ export class Engine {
   }
 
   _coolingRemainingSec(symbol) {
-    const cooldownSec = toNum(this.state.settings.cooldownSec, 0);
+    const s = this.state.settings;
+    // Derive the delay from the explicit re-entry settings. Older states only
+    // have `cooldownSec`, so fall back to it when the new fields are absent.
+    // Deriving here also protects against a stale `cooldownSec: 0` written by
+    // an older build while `reenterEnabled`/`reenterDelayMin` were already set.
+    const hasReenterFields = s.reenterEnabled !== undefined || s.reenterDelayMin !== undefined;
+    const cooldownSec = hasReenterFields
+      ? s.reenterEnabled
+        ? Math.max(0, toNum(s.reenterDelayMin, 0) * 60)
+        : 0
+      : Math.max(0, toNum(s.cooldownSec, 0));
     if (!(cooldownSec > 0)) return 0;
     const stored = toNum(this.state.meta?.reentryBlocks?.[symbol], 0) ?? 0;
     const last = Math.max(this._cooldowns.get(symbol) || 0, stored);

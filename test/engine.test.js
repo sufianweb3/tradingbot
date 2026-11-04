@@ -393,6 +393,27 @@ test("re-entry delay in minutes blocks only the same coin", () => {
   }
 });
 
+test("re-entry delay is derived from minutes even when cooldownSec is stale", () => {
+  const engine = makeEngine({
+    allocationPercent: 20,
+    reenterEnabled: true,
+    reenterDelayMin: 30,
+    cooldownSec: 0,
+  });
+  try {
+    // Simulate a state saved by an older build: the explicit fields are set,
+    // but the derived cooldownSec is still 0.
+    engine.state.settings.cooldownSec = 0;
+    const btc = open(engine, "BTC");
+    engine._closePosition(btc, 100, "test close");
+    assert.equal(engine._isCooling("BTC"), true, "explicit delay must win over stale cooldownSec");
+    assert.ok(engine._coolingRemainingSec("BTC") > 1790);
+    assert.equal(open(engine, "BTC"), null, "BTC cannot re-enter during the 30m delay");
+  } finally {
+    engine.destroy();
+  }
+});
+
 test("re-entry delay survives a server restart", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "oi-bot-restart-"));
   const engine = new Engine({ dataDir: dir });

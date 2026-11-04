@@ -26,6 +26,13 @@ SemVer major (`V1` = `1.x.x`). Runtime data is never committed.
   the old "cooling"/"cooldown" labels.
 - Cloudflare engine generation bumped to `g9`.
 
+### Fixed
+
+- The re-entry delay now derives its value from `reenterEnabled` and
+  `reenterDelayMin` at runtime, so a state saved with a stale `cooldownSec: 0`
+  cannot bypass the 30-minute block. Restart the bot after deploying so the new
+  engine build loads; the saved close times are rebuilt from trade history.
+
 ## [V1] - 2026-11-04
 
 Initial public release.
