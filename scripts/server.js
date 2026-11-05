@@ -1,20 +1,23 @@
 /**
  * Zero-dependency local web server + JSON API.
+ * For local development and testing only.
  */
 
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { Engine } from "./src/engine.js";
-import { attachAiTradeLogger } from "./src/aiDataset.js";
-import { logExportFilename, streamBotLogExport } from "./src/logExport.js";
-import { renderCsv, renderJson, renderReport } from "./src/report.js";
-import { now, toNum } from "./src/util.js";
+import { Engine } from "../src/engine.js";
+import { attachAiTradeLogger } from "../src/aiDataset.js";
+import { logExportFilename, streamBotLogExport } from "../src/logExport.js";
+import { renderCsv, renderJson, renderReport } from "../src/report.js";
+import { now, toNum } from "../src/util.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const PUBLIC_DIR = path.join(__dirname, "public");
-const DATA_DIR = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : path.join(__dirname, "data");
+const ROOT = path.resolve(__dirname, "..");
+const PUBLIC_DIR = path.join(ROOT, "public");
+const DATA_DIR = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : path.join(ROOT, "data");
+const DIST_DIR = path.join(ROOT, "dist");
 const PORT = Number(process.env.PORT || 3000);
 const HOST = process.env.HOST || "127.0.0.1";
 
@@ -78,8 +81,6 @@ function stamp() {
   return new Date().toISOString().replace(/[:.]/g, "-").replace("T", "_").slice(0, 19);
 }
 
-const DIST_DIR = path.join(__dirname, "dist");
-
 function resolveStaticPath(rel) {
   // Check dist first
   const inDist = path.resolve(DIST_DIR, rel);
@@ -88,15 +89,15 @@ function resolveStaticPath(rel) {
   }
   // Check web/
   if (rel.startsWith("web/")) {
-    const inWeb = path.resolve(__dirname, rel);
-    if (inWeb.startsWith(path.join(__dirname, "web") + path.sep) && fs.existsSync(inWeb) && fs.statSync(inWeb).isFile()) {
+    const inWeb = path.resolve(ROOT, rel);
+    if (inWeb.startsWith(path.join(ROOT, "web") + path.sep) && fs.existsSync(inWeb) && fs.statSync(inWeb).isFile()) {
       return inWeb;
     }
   }
   // Check src/
   if (rel.startsWith("src/")) {
-    const inSrc = path.resolve(__dirname, rel);
-    if (inSrc.startsWith(path.join(__dirname, "src") + path.sep) && fs.existsSync(inSrc) && fs.statSync(inSrc).isFile()) {
+    const inSrc = path.resolve(ROOT, rel);
+    if (inSrc.startsWith(path.join(ROOT, "src") + path.sep) && fs.existsSync(inSrc) && fs.statSync(inSrc).isFile()) {
       return inSrc;
     }
   }
@@ -145,8 +146,7 @@ engine.init().catch((err) => {
   console.error("[engine] init error:", err.message);
 });
 
-// Passive AI dataset logger. It only listens to engine events and reads
-// state; removing this block leaves the bot and its trading logic identical.
+// Passive AI dataset logger
 let aiLogger = { dispose() {} };
 try {
   aiLogger = attachAiTradeLogger(engine);
@@ -200,83 +200,58 @@ const server = http.createServer(async (req, res) => {
           try {
             await engine.refreshMarketsIfStale();
           } catch {
-            /* serve the empty cache */
+            /* serve empty cache */
           }
-        } else if (engine.marketCache.error || now() - engine.marketCache.at > 900) {
-          engine.refreshMarketsIfStale().catch(() => null);
         }
+        const live = engine.getLive();
         return sendJson(res, 200, {
           ok: true,
           serverTime: now(),
-          ...engine.getLive(),
+          ...live,
           markets: engine.getMarketRows(),
           meta: engine.getMeta(),
-          venues: engine.hub.summary(),
-        });
-      }
-
-      if (method === "GET" && pathname === "/api/markets") {
-        // Serve the cached table immediately, refresh in the background.
-        if (!engine.marketCache.coins.length) {
-          try {
-            await engine.refreshMarketsIfStale();
-          } catch {
-            /* fall through to the empty cache */
-          }
-        } else if (engine.marketCache.error || now() - engine.marketCache.at > 900) {
-          engine.refreshMarketsIfStale().catch(() => null);
-        }
-        return sendJson(res, 200, {
-          ok: true,
-          serverTime: now(),
-          markets: engine.getMarketRows(),
-          meta: engine.getMeta(),
-          venues: engine.hub.summary(),
-        });
-      }
-
-      if (method === "GET" && pathname === "/api/config") {
-        return sendJson(res, 200, {
-          ok: true,
-          settings: engine.publicSettings(),
-          initialFund: engine.state.initialFund,
+          venues: engine.hub ? engine.hub.summary() : null,
           stats: engine.getStats(),
         });
       }
 
+      if (method === "GET" && pathname === "/api/markets") {
+        return sendJson(res, 200, { ok: true, markets: engine.getMarketRows() });
+      }
+
+      if (method === "GET" && pathname === "/api/config") {
+        return sendJson(res, 200, { ok: true, ...engine.getConfig() });
+      }
+
       if (method === "GET" && pathname === "/api/trades") {
-        const limit = toNum(url.searchParams.get("limit"), 200);
-        const offset = toNum(url.searchParams.get("offset"), 0);
-        const data = engine.getTrades({ limit, offset });
-        return sendJson(res, 200, { ok: true, ...data });
+        const page = Math.max(1, Number(url.searchParams.get("page")) || 1);
+        const limit = Math.max(1, Math.min(200, Number(url.searchParams.get("limit")) || 50));
+        const all = engine.state.trades || [];
+        const total = all.length;
+        const start = (page - 1) * limit;
+        const slice = all.slice(Math.max(0, total - start - limit), Math.max(0, total - start)).reverse();
+        return sendJson(res, 200, { ok: true, trades: slice, total, page, pages: Math.max(1, Math.ceil(total / limit)) });
       }
 
       if (method === "GET" && pathname === "/api/logs") {
-        const includeDataset = url.searchParams.get("dataset") !== "0";
-        const download = url.searchParams.get("download") !== "0";
-        const disp = download ? "attachment" : "inline";
-        res.writeHead(200, {
-          "content-type": "application/x-ndjson; charset=utf-8",
-          "content-disposition": `${disp}; filename="${logExportFilename()}"`,
-          "cache-control": "no-store",
-          "x-content-type-options": "nosniff",
-        });
-        try {
-          const chunks = streamBotLogExport(engine, {
-            datasetDir: aiLogger?.dir || null,
-            includeDataset,
-          });
-          for await (const chunk of chunks) {
-            if (res.destroyed) break;
-            if (!res.write(chunk)) {
-              await new Promise((resolve) => res.once("drain", resolve));
-            }
-          }
-        } catch (err) {
-          console.error("[logs]", err.message);
+        const stampText = stamp();
+        const records = [
+          {
+            record: "snapshot",
+            timestamp: now(),
+            uptimeSec: Math.round(process.uptime()),
+            stats: engine.getStats(),
+            meta: engine.getMeta(),
+          },
+        ];
+        for (const entry of engine.state.logs || []) {
+          records.push({ record: "log", ...entry });
         }
-        res.end();
-        return;
+        const body = records.map((r) => JSON.stringify(r)).join("\n") + "\n";
+        const disp = url.searchParams.get("download") !== "0" ? "attachment" : "inline";
+        return sendText(res, 200, body, "application/x-ndjson; charset=utf-8", {
+          "content-disposition": `${disp}; filename="oi-bot-logs-${stampText}.jsonl"`,
+        });
       }
 
       if (method === "GET" && pathname === "/api/report") {
@@ -303,25 +278,15 @@ const server = http.createServer(async (req, res) => {
       if (method === "POST" && pathname === "/api/settings") {
         const body = await readBody(req);
         const patch = body?.settings && typeof body.settings === "object" ? body.settings : body;
-        if (!patch || typeof patch !== "object") {
-          return sendJson(res, 400, { ok: false, error: "invalid-settings" });
-        }
+        if (!patch || typeof patch !== "object") return sendJson(res, 400, { ok: false, error: "invalid-settings" });
         const result = engine.updateSettings(patch);
         return sendJson(res, 200, { ok: true, ...result, stats: engine.getStats() });
-      }
-
-      if (method === "POST" && pathname === "/api/device/market") {
-        const body = await readBody(req);
-        const result = engine.ingestDeviceFeed(body || {});
-        return sendJson(res, result.ok ? 200 : 400, result);
       }
 
       if (method === "POST" && pathname === "/api/coinglass/key") {
         const body = await readBody(req);
         const key = body?.clear === true ? null : body?.apiKey ?? body?.key;
-        if (key !== null && typeof key !== "string") {
-          return sendJson(res, 400, { ok: false, error: "invalid-api-key" });
-        }
+        if (key !== null && typeof key !== "string") return sendJson(res, 400, { ok: false, error: "invalid-api-key" });
         const result = engine.setCoinglassApiKey(key);
         return sendJson(res, 200, { ok: true, ...result, stats: engine.getStats() });
       }
@@ -376,7 +341,7 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, HOST, () => {
   console.log("");
-  console.log("  OI Sniper - paper trading bot");
+  console.log("  OI Sniper - local development server");
   console.log(`  -> http://${HOST}:${PORT}`);
   console.log(`  data: ${path.join(DATA_DIR, "state.json")}`);
   console.log("");
@@ -387,7 +352,7 @@ function shutdown(signal) {
   try {
     aiLogger.dispose();
   } catch {
-    /* logger is passive; never block shutdown */
+    /* ignore */
   }
   engine.destroy();
   server.close(() => process.exit(0));
