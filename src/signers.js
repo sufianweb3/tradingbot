@@ -375,3 +375,75 @@ export async function signKuCoinRequest({
 
 export const signKucoinRequest = signKuCoinRequest;
 
+/**
+ * Sign a MEXC Contract/Futures API request (HMAC-SHA256).
+ * String to sign: ApiKey + Request-Time + paramString
+ * - For GET: paramString is alphabetically sorted query string (buildQueryString(params))
+ * - For POST/PUT/DELETE: paramString is raw JSON string body
+ * - If queryString is explicitly provided, it is used as paramString
+ * Headers: ApiKey, Request-Time, Signature, Content-Type: application/json
+ */
+export async function signMexcRequest({
+  apiKey = "",
+  secret = "",
+  secretKey = "",
+  method = "GET",
+  params = {},
+  queryString = "",
+  body = null,
+  timestamp = null,
+}) {
+  const signingKey = secret || secretKey;
+  if (!apiKey || !signingKey) {
+    throw new Error("MEXC signing requires apiKey and secret.");
+  }
+
+  const m = String(method).toUpperCase();
+  const ts = String(
+    timestamp !== null && timestamp !== undefined
+      ? timestamp
+      : getAdjustedTime("mexc")
+  );
+
+  let paramStr = "";
+  let bodyStr = "";
+  let queryStr = "";
+
+  if (queryString) {
+    paramStr = queryString;
+    queryStr = queryString;
+  } else if (m === "GET") {
+    if (params && Object.keys(params).length > 0) {
+      paramStr = buildQueryString(params);
+      queryStr = paramStr;
+    }
+  } else {
+    if (body !== null && body !== undefined) {
+      bodyStr = typeof body === "string" ? body : JSON.stringify(body);
+      paramStr = bodyStr;
+    } else if (params && Object.keys(params).length > 0) {
+      paramStr = buildQueryString(params);
+      queryStr = paramStr;
+    }
+  }
+
+  const signPayload = `${apiKey}${ts}${paramStr}`;
+  const signature = await hmacSha256(signingKey, signPayload);
+
+  return {
+    headers: {
+      ApiKey: apiKey,
+      "Request-Time": ts,
+      Signature: signature,
+      "Content-Type": "application/json",
+    },
+    signature,
+    timestamp: Number(ts),
+    signString: signPayload,
+    queryString: queryStr,
+    bodyStr,
+  };
+}
+
+export const signMEXCRequest = signMexcRequest;
+

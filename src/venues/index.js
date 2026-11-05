@@ -6,12 +6,14 @@ import { BinanceAdapter } from "./binance.js";
 import { BybitAdapter } from "./bybit.js";
 import { GateAdapter } from "./gate.js";
 import { KuCoinAdapter } from "./kucoin.js";
+import { MexcAdapter } from "./mexc.js";
 import { ExchangeAdapter } from "./interface.js";
 
 export { BinanceAdapter } from "./binance.js";
 export { BybitAdapter } from "./bybit.js";
 export { GateAdapter } from "./gate.js";
 export { KuCoinAdapter } from "./kucoin.js";
+export { MexcAdapter } from "./mexc.js";
 export { ExchangeAdapter } from "./interface.js";
 
 export const SUPPORTED_VENUES = [
@@ -19,7 +21,7 @@ export const SUPPORTED_VENUES = [
   { id: "bybit", name: "Bybit V5 Linear", tier: "v1", liveSupported: true },
   { id: "gate", name: "Gate.io USDT Futures", tier: "v1-m4", liveSupported: true },
   { id: "kucoin", name: "KuCoin Futures", tier: "v1-m4", liveSupported: true },
-  { id: "mexc", name: "MEXC Futures", tier: "v1-m5", liveSupported: false },
+  { id: "mexc", name: "MEXC Futures", tier: "v1-m5", liveSupported: true },
 ];
 
 export function createVenueAdapter(venueId, options = {}) {
@@ -33,8 +35,11 @@ export function createVenueAdapter(venueId, options = {}) {
       return new GateAdapter(options);
     case "kucoin":
       return new KuCoinAdapter(options);
+    case "mexc":
+      return new MexcAdapter(options);
     default:
       throw new Error(`Unsupported exchange adapter venue: '${venueId}'`);
   }
 }
+
 

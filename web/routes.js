@@ -408,6 +408,19 @@ export async function handleRpcRequest({ path, method = "GET", body = {}, query 
         console.warn(`[routes] Account mode check warning for ${venue}:`, err?.message);
       }
 
+      let capabilities = { trading: true };
+      let capabilityProbe = null;
+      if (typeof adapter.probeCapability === "function") {
+        try {
+          capabilityProbe = await adapter.probeCapability();
+        } catch (err) {
+          capabilityProbe = { ok: false, trading: false, futuresOrderAvailable: false, message: err.message };
+        }
+      }
+      if (typeof adapter.capabilities === "function") {
+        capabilities = adapter.capabilities();
+      }
+
       return {
         status: 200,
         data: {
@@ -418,6 +431,8 @@ export async function handleRpcRequest({ path, method = "GET", body = {}, query 
           balance,
           instrumentsCount: instruments.length,
           accountMode: modeCheck,
+          capabilities,
+          capabilityProbe,
         },
       };
     }
@@ -493,8 +508,26 @@ export async function handleRpcRequest({ path, method = "GET", body = {}, query 
             },
           };
         }
+        if (typeof adapter.probeCapability === "function") {
+          try {
+            await adapter.probeCapability();
+          } catch {
+            // Handled via capabilities() check below
+          }
+        }
+        const caps = typeof adapter.capabilities === "function" ? adapter.capabilities() : { trading: true };
+        if (!caps.trading) {
+          return {
+            status: 400,
+            data: {
+              ok: false,
+              error: caps.reason || "Futures order API unavailable at MEXC",
+            },
+          };
+        }
         engine.setLiveAdapter(adapter);
       }
+
       const result = await engine.setMode(targetMode);
       await store.flush();
       return {

@@ -2394,6 +2394,10 @@ function setupExchangeUi() {
       $("#wizardTitle").textContent = "Connect KuCoin Futures";
       $("#wizardInstructions").textContent = "Create an API Key on KuCoin with 'Futures Trading' enabled. DO NOT check 'Transfer' or 'Withdraw'. Enter your API Passphrase below.";
       $("#wizardPassphraseRow").classList.remove("hidden");
+    } else if (venueId === "mexc") {
+      $("#wizardTitle").textContent = "Connect MEXC Futures";
+      $("#wizardInstructions").textContent = "Create an API Key on MEXC with Contract (Futures) trading enabled. Passphrase is not needed. NEVER enable withdrawal permissions on your MEXC API key.";
+      $("#wizardPassphraseRow").classList.add("hidden");
     }
   }
 
@@ -2425,13 +2429,28 @@ function setupExchangeUi() {
           body: { venue: selectedVenue, apiKey, secret, passphrase },
         });
 
-        feedback.innerHTML = `
-          <div style="color:#3ddc97; font-weight:600;">✓ Verification Passed</div>
-          <div>• Trading permissions: <strong>Enabled</strong></div>
-          <div>• Withdrawal permissions: <strong>Disabled (Safe)</strong></div>
-          <div>• Available Balance: <strong>$${num(res.balance?.availableUsdt).toFixed(2)} USDT</strong></div>
-          <div>• Tradable contracts: <strong>${res.instrumentsCount || 0}</strong></div>
-        `;
+        if (res.capabilities && !res.capabilities.trading) {
+          feedback.innerHTML = `
+            <div style="color:#f59e0b; font-weight:600;">⚠️ Futures order API unavailable at MEXC</div>
+            <div style="font-size:12px; margin-top:2px; color:var(--muted);">${res.capabilities.reason || "Futures order API unavailable at MEXC"}. Trading will remain in Paper mode only.</div>
+            <div style="margin-top:6px;">• Trading permissions: <strong>Verified</strong></div>
+            <div>• Withdrawal permissions: <strong>Disabled (Safe)</strong></div>
+            <div>• Available Balance: <strong>$${num(res.balance?.availableUsdt).toFixed(2)} USDT</strong></div>
+            <div>• Tradable contracts: <strong>${res.instrumentsCount || 0}</strong></div>
+          `;
+        } else {
+          const probeMsg = selectedVenue === "mexc"
+            ? `<div style="color:#3ddc97; font-size:12px; margin-top:2px;">• Official Futures Order API: <strong>Operational (Live Ready)</strong></div>`
+            : "";
+          feedback.innerHTML = `
+            <div style="color:#3ddc97; font-weight:600;">✓ Verification Passed</div>
+            <div>• Trading permissions: <strong>Enabled</strong></div>
+            <div>• Withdrawal permissions: <strong>Disabled (Safe)</strong></div>
+            <div>• Available Balance: <strong>$${num(res.balance?.availableUsdt).toFixed(2)} USDT</strong></div>
+            <div>• Tradable contracts: <strong>${res.instrumentsCount || 0}</strong></div>
+            ${probeMsg}
+          `;
+        }
       } catch (err) {
         feedback.innerHTML = `
           <div style="color:#f87171; font-weight:600;">✕ Connection Test Failed</div>
@@ -2440,6 +2459,7 @@ function setupExchangeUi() {
       }
     };
   }
+
 
   const wizardSaveBtn = $("#btnWizardSave");
   if (wizardSaveBtn) {

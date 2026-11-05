@@ -4,6 +4,7 @@ import { BinanceAdapter } from "../src/venues/binance.js";
 import { BybitAdapter } from "../src/venues/bybit.js";
 import { GateAdapter } from "../src/venues/gate.js";
 import { KuCoinAdapter } from "../src/venues/kucoin.js";
+import { MexcAdapter } from "../src/venues/mexc.js";
 import { createVenueAdapter } from "../src/venues/index.js";
 
 function mockFetch(handler) {
@@ -29,8 +30,14 @@ test("venues factory creates adapters correctly", () => {
   assert.equal(kucoin.id, "kucoin");
   assert.equal(kucoin.capabilities().trading, true);
 
+  const mexc = createVenueAdapter("mexc", { apiKey: "k", secret: "s" });
+  assert.equal(mexc.id, "mexc");
+  assert.equal(mexc.capabilities().trading, false);
+  assert.equal(mexc.capabilities().reason, "Futures order API unavailable at MEXC");
+
   assert.throws(() => createVenueAdapter("unknown_venue"), /unsupported/i);
 });
+
 
 test("binance: validateKey REJECTS key with withdrawal permission (PRD 5.6 E3)", async () => {
   const fetchFn = mockFetch(async (url) => {
@@ -657,5 +664,455 @@ test("kucoin: getPositions, cancel, and cancelAll operate cleanly", async () => 
 
   const caRes = await adapter.cancelAll("XBTUSDTM");
   assert.equal(caRes.ok, true);
+});
+
+// ============================================================================
+// MEXC FUTURES ADAPTER (MILESTONE M5)
+// ============================================================================
+
+test("mexc: validateKey REJECTS key with withdrawal permission (PRD 5.6 E3)", async () => {
+  const fetchFn = mockFetch(async (url) => {
+    if (url.includes("/api/v1/contract/ping")) {
+      return { ok: true, json: async () => ({ success: true, code: 0, data: Date.now() }) };
+    }
+    if (url.includes("/api/v1/private/account/api_key_info")) {
+      return {
+        ok: true,
+        text: async () =>
+          JSON.stringify({
+            success: true,
+            code: 0,
+            data: {
+              canTrade: true,
+              canWithdraw: true, // WITHDRAWAL ENABLED - MUST BE REJECTED
+            },
+          }),
+      };
+    }
+    throw new Error(`Unexpected url: ${url}`);
+  });
+
+  const adapter = new MexcAdapter({ apiKey: "test-mexc-key", secret: "test-mexc-secret", fetchFn });
+  const res = await adapter.validateKey();
+
+  assert.equal(res.ok, false);
+  assert.equal(res.canWithdraw, true);
+  assert.ok(res.error.includes("withdrawal permissions enabled"));
+  assert.ok(res.error.includes("delete this key"));
+});
+
+test("mexc: validateKey succeeds when trading is enabled and withdrawal is disabled", async () => {
+  const fetchFn = mockFetch(async (url) => {
+    if (url.includes("/api/v1/contract/ping")) {
+      return { ok: true, json: async () => ({ success: true, code: 0, data: Date.now() }) };
+    }
+    if (url.includes("/api/v1/private/account/api_key_info")) {
+      return {
+        ok: true,
+        text: async () =>
+          JSON.stringify({
+            success: true,
+            code: 0,
+            data: {
+              permissions: ["CONTRACT_TRADE"],
+              canWithdraw: false,
+            },
+          }),
+      };
+    }
+    if (url.includes("/api/v1/private/account/assets")) {
+      return {
+        ok: true,
+        text: async () =>
+          JSON.stringify({
+            success: true,
+            code: 0,
+            data: [{ currency: "USDT", availableBalance: 500, equity: 500 }],
+          }),
+      };
+    }
+    throw new Error(`Unexpected url: ${url}`);
+  });
+
+  const adapter = new MexcAdapter({ apiKey: "test-mexc-key", secret: "test-mexc-secret", fetchFn });
+  const res = await adapter.validateKey();
+
+  assert.equal(res.ok, true);
+  assert.equal(res.canTrade, true);
+  assert.equal(res.canWithdraw, false);
+});
+
+test("mexc: getBalance parses USDT account funds correctly", async () => {
+  const fetchFn = mockFetch(async (url) => {
+    if (url.includes("/api/v1/private/account/assets")) {
+      return {
+        ok: true,
+        text: async () =>
+          JSON.stringify({
+            success: true,
+            code: 0,
+            data: [
+              { currency: "BTC", availableBalance: 0.2, equity: 0.2 },
+              {
+                currency: "USDT",
+                availableBalance: 1250.5,
+                cashBalance: 1250.5,
+                equity: 1500.75,
+                frozenBalance: 0,
+                unrealized: 250.25,
+              },
+            ],
+          }),
+      };
+    }
+    throw new Error(`Unexpected url: ${url}`);
+  });
+
+  const adapter = new MexcAdapter({ apiKey: "k", secret: "s", fetchFn });
+  const bal = await adapter.getBalance();
+
+  assert.equal(bal.availableUsdt, 1250.5);
+  assert.equal(bal.equityUsdt, 1500.75);
+  assert.equal(bal.walletUsdt, 1250.5);
+});
+
+test("mexc: getInstruments returns tradable USDT contracts", async () => {
+  const fetchFn = mockFetch(async (url) => {
+    if (url.includes("/api/v1/contract/detail")) {
+      return {
+        ok: true,
+        text: async () =>
+          JSON.stringify({
+            success: true,
+            code: 0,
+            data: [
+              {
+                symbol: "BTC_USDT",
+                baseCoin: "BTC",
+                quoteCoin: "USDT",
+                priceUnit: 0.1,
+                volUnit: 1,
+                minVol: 1,
+                maxLeverage: 200,
+                state: 0, // Online
+              },
+              {
+                symbol: "OLD_USDT",
+                baseCoin: "OLD",
+                quoteCoin: "USDT",
+                state: 1, // Inactive
+              },
+              {
+                symbol: "BTC_USD",
+                baseCoin: "BTC",
+                quoteCoin: "USD",
+                state: 0, // Inverse, non-USDT
+              },
+            ],
+          }),
+      };
+    }
+    throw new Error(`Unexpected url: ${url}`);
+  });
+
+  const adapter = new MexcAdapter({ apiKey: "k", secret: "s", fetchFn });
+  const instruments = await adapter.getInstruments();
+
+  assert.equal(instruments.length, 1);
+  assert.equal(instruments[0].symbol, "BTC_USDT");
+  assert.equal(instruments[0].baseCoin, "BTC");
+  assert.equal(instruments[0].quoteCoin, "USDT");
+  assert.equal(instruments[0].tickSize, 0.1);
+  assert.equal(instruments[0].lotSize, 1);
+  assert.equal(instruments[0].maxLeverage, 200);
+});
+
+test("mexc: getPositions normalizes long and short open positions", async () => {
+  const fetchFn = mockFetch(async (url) => {
+    if (url.includes("/api/v1/private/position/open_positions")) {
+      return {
+        ok: true,
+        text: async () =>
+          JSON.stringify({
+            success: true,
+            code: 0,
+            data: [
+              {
+                positionId: 101,
+                symbol: "BTC_USDT",
+                holdVol: 5,
+                positionType: 1, // Long
+                holdAvgPrice: 65000,
+                fairPrice: 65500,
+                liquidatePrice: 58000,
+                leverage: 20,
+                unRealizedPnl: 100,
+              },
+              {
+                positionId: 102,
+                symbol: "ETH_USDT",
+                holdVol: 10,
+                positionType: 2, // Short
+                holdAvgPrice: 3500,
+                fairPrice: 3450,
+                liquidatePrice: 3900,
+                leverage: 10,
+                unRealizedPnl: 50,
+              },
+              {
+                positionId: 103,
+                symbol: "SOL_USDT",
+                holdVol: 0, // Closed / zero
+                positionType: 1,
+              },
+            ],
+          }),
+      };
+    }
+    throw new Error(`Unexpected url: ${url}`);
+  });
+
+  const adapter = new MexcAdapter({ apiKey: "k", secret: "s", fetchFn });
+  const positions = await adapter.getPositions();
+
+  assert.equal(positions.length, 2);
+  assert.equal(positions[0].symbol, "BTC_USDT");
+  assert.equal(positions[0].side, "long");
+  assert.equal(positions[0].size, 5);
+  assert.equal(positions[0].entryPrice, 65000);
+  assert.equal(positions[0].liqPrice, 58000);
+
+  assert.equal(positions[1].symbol, "ETH_USDT");
+  assert.equal(positions[1].side, "short");
+  assert.equal(positions[1].size, 10);
+  assert.equal(positions[1].entryPrice, 3500);
+});
+
+test("mexc: capability probe detects operational futures order API and enables live trading", async () => {
+  let probeCalled = false;
+  let cancelCalled = false;
+  const fetchFn = mockFetch(async (url, init) => {
+    if (url.includes("/api/v1/private/order/create")) {
+      probeCalled = true;
+      return {
+        ok: true,
+        text: async () =>
+          JSON.stringify({
+            success: true,
+            code: 0,
+            data: { orderId: "mexc_probe_order_123" },
+          }),
+      };
+    }
+    if (url.includes("/api/v1/private/order/cancel")) {
+      cancelCalled = true;
+      return {
+        ok: true,
+        text: async () => JSON.stringify({ success: true, code: 0, data: {} }),
+      };
+    }
+    throw new Error(`Unexpected url: ${url}`);
+  });
+
+  const adapter = new MexcAdapter({ apiKey: "k", secret: "s", fetchFn });
+  assert.equal(adapter.capabilities().trading, false); // Initially false before probe
+
+  const probe = await adapter.probeCapability();
+
+  assert.equal(probe.ok, true);
+  assert.equal(probe.trading, true);
+  assert.equal(probe.futuresOrderAvailable, true);
+  assert.equal(probeCalled, true);
+  assert.equal(cancelCalled, true);
+
+  assert.equal(adapter.capabilities().trading, true);
+  assert.equal(adapter.capabilities().reason, undefined);
+});
+
+test("mexc: capability probe detects unavailable/maintenance and restricts to Paper mode", async () => {
+  const fetchFn = mockFetch(async (url) => {
+    if (url.includes("/api/v1/private/order/create")) {
+      return {
+        ok: false,
+        status: 503,
+        statusText: "Service Unavailable",
+        text: async () =>
+          JSON.stringify({
+            code: 604,
+            message: "Feature under maintenance",
+          }),
+      };
+    }
+    throw new Error(`Unexpected url: ${url}`);
+  });
+
+  const adapter = new MexcAdapter({ apiKey: "k", secret: "s", fetchFn });
+  const probe = await adapter.probeCapability();
+
+  assert.equal(probe.ok, false);
+  assert.equal(probe.trading, false);
+  assert.equal(probe.futuresOrderAvailable, false);
+  assert.equal(probe.reason, "Futures order API unavailable at MEXC");
+
+  assert.equal(adapter.capabilities().trading, false);
+  assert.equal(adapter.capabilities().reason, "Futures order API unavailable at MEXC");
+
+  // Attempting to place market order must throw with documented reason
+  await assert.rejects(
+    () => adapter.placeMarket({ symbol: "BTC_USDT", side: "long", qty: 1 }),
+    /Futures order API unavailable at MEXC/
+  );
+});
+
+test("mexc: placeMarket, setLeverage, placeStop, and placeReduceLimit submit orders when capability is operational", async () => {
+  let createdOrders = [];
+  let leverageBody = null;
+  const fetchFn = mockFetch(async (url, init) => {
+    if (url.includes("/api/v1/private/order/create")) {
+      const b = init.body ? JSON.parse(init.body) : {};
+      createdOrders.push(b);
+      return {
+        ok: true,
+        text: async () =>
+          JSON.stringify({
+            success: true,
+            code: 0,
+            data: { orderId: `mexc_ord_${createdOrders.length}`, price: 65000, avgPrice: 65000 },
+          }),
+      };
+    }
+    if (url.includes("/api/v1/private/stoporder/create")) {
+      const b = init.body ? JSON.parse(init.body) : {};
+      createdOrders.push(b);
+      return {
+        ok: true,
+        text: async () =>
+          JSON.stringify({
+            success: true,
+            code: 0,
+            data: { orderId: `mexc_stop_${createdOrders.length}` },
+          }),
+      };
+    }
+    if (url.includes("/api/v1/private/position/change_leverage")) {
+      leverageBody = init.body ? JSON.parse(init.body) : {};
+      return {
+        ok: true,
+        text: async () => JSON.stringify({ success: true, code: 0, data: {} }),
+      };
+    }
+    if (url.includes("/api/v1/private/order/cancel")) {
+      return { ok: true, text: async () => JSON.stringify({ success: true, code: 0, data: {} }) };
+    }
+    throw new Error(`Unexpected url: ${url}`);
+  });
+
+  const adapter = new MexcAdapter({ apiKey: "k", secret: "s", fetchFn });
+  adapter._tradingCapable = true; // Capability verified
+  adapter._probeReason = undefined;
+
+  // 1. setLeverage
+  await adapter.setLeverage("BTC_USDT", 25);
+  assert.equal(leverageBody.symbol, "BTC_USDT");
+  assert.equal(leverageBody.leverage, 25);
+  assert.equal(leverageBody.openType, 1);
+
+  // 2. placeMarket open long (side 1)
+  const marketLong = await adapter.placeMarket({
+    symbol: "BTC_USDT",
+    side: "long",
+    qty: 2,
+    clientId: "cid_long_1",
+  });
+  assert.equal(marketLong.side, "long");
+  assert.equal(marketLong.qty, 2);
+  const firstOrder = createdOrders[0];
+  assert.equal(firstOrder.symbol, "BTC_USDT");
+  assert.equal(firstOrder.side, 1); // 1 = Open Long
+  assert.equal(firstOrder.type, 5); // 5 = Market
+  assert.equal(firstOrder.vol, 2);
+
+  // 3. placeMarket open short (side 3)
+  await adapter.placeMarket({
+    symbol: "BTC_USDT",
+    side: "short",
+    qty: 3,
+    clientId: "cid_short_1",
+  });
+  const secondOrder = createdOrders[1];
+  assert.equal(secondOrder.side, 3); // 3 = Open Short
+
+  // 4. placeStop
+  const stopRes = await adapter.placeStop({
+    symbol: "BTC_USDT",
+    side: "long",
+    qty: 2,
+    triggerPrice: 64000,
+    clientId: "cid_sl_1",
+    closePosition: true,
+  });
+  assert.equal(stopRes.triggerPrice, 64000);
+  assert.equal(stopRes.status, "NEW");
+
+  // 5. placeReduceLimit (TP1)
+  const limitRes = await adapter.placeReduceLimit({
+    symbol: "BTC_USDT",
+    side: "long",
+    qty: 1,
+    price: 66000,
+    clientId: "cid_tp_1",
+  });
+  assert.equal(limitRes.price, 66000);
+  assert.equal(limitRes.qty, 1);
+});
+
+test("mexc: closePosition closes open position at market with reduceOnly", async () => {
+  let closeOrderBody = null;
+  const fetchFn = mockFetch(async (url, init) => {
+    if (url.includes("/api/v1/private/position/open_positions")) {
+      return {
+        ok: true,
+        text: async () =>
+          JSON.stringify({
+            success: true,
+            code: 0,
+            data: [
+              {
+                symbol: "BTC_USDT",
+                holdVol: 4,
+                positionType: 1, // Long
+                holdAvgPrice: 65000,
+              },
+            ],
+          }),
+      };
+    }
+    if (url.includes("/api/v1/private/order/create")) {
+      closeOrderBody = init.body ? JSON.parse(init.body) : {};
+      return {
+        ok: true,
+        text: async () =>
+          JSON.stringify({
+            success: true,
+            code: 0,
+            data: { orderId: "close_ord_99", price: 65200 },
+          }),
+      };
+    }
+    throw new Error(`Unexpected url: ${url}`);
+  });
+
+  const adapter = new MexcAdapter({ apiKey: "k", secret: "s", fetchFn });
+  adapter._tradingCapable = true;
+
+  const res = await adapter.closePosition("BTC_USDT");
+  assert.ok(res);
+  assert.equal(res.symbol, "BTC_USDT");
+  assert.equal(res.side, "short"); // Opposite side to close long
+  assert.equal(res.qty, 4);
+
+  assert.equal(closeOrderBody.side, 4); // 4 = Close Long
+  assert.equal(closeOrderBody.reduceOnly, true);
+  assert.equal(closeOrderBody.vol, 4);
 });
 

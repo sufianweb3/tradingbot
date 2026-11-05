@@ -13,6 +13,8 @@ import {
   signGateRequest,
   signKuCoinRequest,
   signKucoinRequest,
+  signMexcRequest,
+  signMEXCRequest,
   syncTime,
 } from "../src/signers.js";
 
@@ -185,6 +187,97 @@ test("signers: signKuCoinRequest formats HMAC-SHA256 Base64 headers, signed pass
   await assert.rejects(
     () => signKuCoinRequest({ apiKey, secret, passphrase: "", endpoint: "/test" }),
     /requires apiKey, secret, and passphrase/i
+  );
+});
+
+test("signers: signMexcRequest formats HMAC-SHA256 headers with sorted query params for GET", async () => {
+  const apiKey = "mexc-api-key-123";
+  const secret = "mexc-secret-xyz";
+  const timestamp = 1711000000000;
+  // Unsorted params: zSymbol, bSide, aType
+  const params = { zSymbol: "BTC_USDT", bSide: "1", aType: "open" };
+
+  const res = await signMexcRequest({
+    apiKey,
+    secret,
+    method: "GET",
+    params,
+    timestamp,
+  });
+
+  assert.equal(res.headers["ApiKey"], apiKey);
+  assert.equal(res.headers["Request-Time"], "1711000000000");
+  assert.equal(res.headers["Content-Type"], "application/json");
+  assert.ok(res.headers["Signature"].length === 64); // 64 hex chars
+  assert.equal(res.signature, res.headers["Signature"]);
+
+  // Sorted query string: aType=open&bSide=1&zSymbol=BTC_USDT
+  assert.equal(res.queryString, "aType=open&bSide=1&zSymbol=BTC_USDT");
+  assert.equal(res.signString, `${apiKey}1711000000000aType=open&bSide=1&zSymbol=BTC_USDT`);
+
+  // Verify signature matches direct hmacSha256
+  const oracleSig = await hmacSha256(secret, res.signString);
+  assert.equal(res.signature, oracleSig);
+});
+
+test("signers: signMexcRequest formats HMAC-SHA256 with JSON body for POST", async () => {
+  const apiKey = "mexc-test-key";
+  const secret = "mexc-test-secret";
+  const timestamp = 1711000050000;
+  const body = { symbol: "ETH_USDT", price: 3500, vol: 2, side: 1, type: 1 };
+
+  const res = await signMexcRequest({
+    apiKey,
+    secret,
+    method: "POST",
+    body,
+    timestamp,
+  });
+
+  assert.equal(res.headers["ApiKey"], apiKey);
+  assert.equal(res.headers["Request-Time"], "1711000050000");
+  assert.ok(res.headers["Signature"].length === 64);
+  assert.equal(res.bodyStr, JSON.stringify(body));
+  assert.equal(res.signString, `${apiKey}1711000050000${JSON.stringify(body)}`);
+
+  // Also test with secretKey alias parameter
+  const resAlias = await signMexcRequest({
+    apiKey,
+    secretKey: secret,
+    method: "POST",
+    body,
+    timestamp,
+  });
+  assert.equal(resAlias.signature, res.signature);
+
+  // Test signMEXCRequest export alias
+  assert.equal(typeof signMEXCRequest, "function");
+});
+
+test("signers: signMexcRequest incorporates clock drift and handles input validation", async () => {
+  const apiKey = "mexc-drift-key";
+  const secret = "mexc-drift-secret";
+
+  setClockOffset("mexc", 4500);
+  const before = Date.now();
+  const res = await signMexcRequest({
+    apiKey,
+    secret,
+    method: "GET",
+  });
+  const after = Date.now();
+
+  assert.ok(res.timestamp >= before + 4400 && res.timestamp <= after + 4600);
+  assert.equal(res.headers["Request-Time"], String(res.timestamp));
+
+  // Required validations
+  await assert.rejects(
+    () => signMexcRequest({ apiKey: "", secret }),
+    /requires apiKey and secret/i
+  );
+  await assert.rejects(
+    () => signMexcRequest({ apiKey, secret: "" }),
+    /requires apiKey and secret/i
   );
 });
 

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { GateAdapter } from "../src/venues/gate.js";
 import { KuCoinAdapter } from "../src/venues/kucoin.js";
+import { MexcAdapter } from "../src/venues/mexc.js";
 
 function mockFetch(handler) {
   return async (url, options = {}) => {
@@ -735,3 +736,182 @@ test("kucoin adversarial: validateKey security invariant thoroughly catches with
   assert.equal(res3.canTrade, false);
   assert.ok(res3.error.includes("Futures Trading permissions"));
 });
+
+// ============================================================================
+// 7. MEXC ADVERSARIAL SECURITY & LIFECYCLE (MILESTONE M5)
+// ============================================================================
+
+test("mexc adversarial: validateKey security invariant thoroughly catches withdrawal & transfer variations", async () => {
+  let keyInfoResponse = {};
+  let assetsResponse = [{ currency: "USDT", availableBalance: 100, equity: 100 }];
+
+  const fetchFn = mockFetch(async (url) => {
+    if (url.includes("/api/v1/contract/ping")) return { ok: true, json: async () => ({ success: true, code: 0, data: Date.now() }) };
+    if (url.includes("/api/v1/private/account/api_key_info")) {
+      return { ok: true, text: async () => JSON.stringify({ success: true, code: 0, data: keyInfoResponse }) };
+    }
+    if (url.includes("/api/v1/private/account/assets")) {
+      return { ok: true, text: async () => JSON.stringify({ success: true, code: 0, data: assetsResponse }) };
+    }
+    throw new Error(`Unexpected url: ${url}`);
+  });
+
+  const adapter = new MexcAdapter({ apiKey: "k", secret: "s", fetchFn });
+
+  // 1. Stringified boolean 'can_withdraw: "TRUE"'
+  keyInfoResponse = { can_withdraw: "TRUE" };
+  const res1 = await adapter.validateKey();
+  assert.equal(res1.ok, false);
+  assert.equal(res1.canWithdraw, true);
+  assert.ok(res1.error.includes("withdrawal permissions enabled"));
+
+  // 2. Numeric flag 'transfer: 1'
+  keyInfoResponse = { transfer: 1 };
+  const res2 = await adapter.validateKey();
+  assert.equal(res2.ok, false);
+  assert.equal(res2.canWithdraw, true);
+
+  // 3. Comma-delimited list 'permissions: "SPOT,FUTURES,WITHDRAWAL"'
+  keyInfoResponse = { permissions: "SPOT,FUTURES,WITHDRAWAL" };
+  const res3 = await adapter.validateKey();
+  assert.equal(res3.ok, false);
+  assert.equal(res3.canWithdraw, true);
+
+  // 4. Array of tokens '["FUTURES", "WITHDRAW"]'
+  keyInfoResponse = { permissions: ["FUTURES", "WITHDRAW"] };
+  const res4 = await adapter.validateKey();
+  assert.equal(res4.ok, false);
+  assert.equal(res4.canWithdraw, true);
+
+  // 5. Array of objects with non-read-only withdraw
+  keyInfoResponse = { perms: [{ name: "withdraw", read_only: false }] };
+  const res5 = await adapter.validateKey();
+  assert.equal(res5.ok, false);
+  assert.equal(res5.canWithdraw, true);
+
+  // 6. Array of objects with wallet non-read-only
+  keyInfoResponse = { perms: [{ name: "wallet", read_only: false }] };
+  const res6 = await adapter.validateKey();
+  assert.equal(res6.ok, false);
+  assert.equal(res6.canWithdraw, true);
+
+  // 7. Nested dictionary '{ permissions: { withdraw: true } }'
+  keyInfoResponse = { permissions: { withdraw: true } };
+  const res7 = await adapter.validateKey();
+  assert.equal(res7.ok, false);
+  assert.equal(res7.canWithdraw, true);
+
+  // 8. Nested dictionary '{ perms: { transfer: 1 } }'
+  keyInfoResponse = { perms: { transfer: 1 } };
+  const res8 = await adapter.validateKey();
+  assert.equal(res8.ok, false);
+  assert.equal(res8.canWithdraw, true);
+
+  // 9. Sneaky withdrawal in assets response
+  keyInfoResponse = { permissions: ["FUTURES"] };
+  assetsResponse = { canWithdraw: true, assets: [{ currency: "USDT", availableBalance: 100 }] };
+  const res9 = await adapter.validateKey();
+  assert.equal(res9.ok, false);
+  assert.equal(res9.canWithdraw, true);
+  assetsResponse = [{ currency: "USDT", availableBalance: 100, equity: 100 }];
+
+  // 10. Missing futures trading permission
+  keyInfoResponse = { permissions: ["SPOT"] };
+  const res10 = await adapter.validateKey();
+  assert.equal(res10.ok, false);
+  assert.equal(res10.canTrade, false);
+  assert.ok(res10.error.includes("Futures Trading permissions"));
+});
+
+test("mexc adversarial: getBalance handles zero balances, malformed responses, and floating precision", async () => {
+  let mockAssets = [];
+  const fetchFn = mockFetch(async (url) => {
+    if (url.includes("/api/v1/private/account/assets")) {
+      return {
+        ok: true,
+        text: async () => JSON.stringify({ success: true, code: 0, data: mockAssets }),
+      };
+    }
+    throw new Error(`Unexpected url: ${url}`);
+  });
+
+  const adapter = new MexcAdapter({ apiKey: "k", secret: "s", fetchFn });
+
+  // 1. Empty assets array
+  mockAssets = [];
+  const b1 = await adapter.getBalance();
+  assert.equal(b1.availableUsdt, 0);
+  assert.equal(b1.equityUsdt, 0);
+  assert.equal(b1.walletUsdt, 0);
+
+  // 2. High floating precision strings
+  mockAssets = [
+    {
+      currency: "USDT",
+      availableBalance: "1234.56789012",
+      equity: "2345.67890123",
+      cashBalance: "1234.56789012",
+    },
+  ];
+  const b2 = await adapter.getBalance();
+  assert.equal(b2.availableUsdt, 1234.56789012);
+  assert.equal(b2.equityUsdt, 2345.67890123);
+  assert.equal(b2.walletUsdt, 1234.56789012);
+});
+
+test("mexc adversarial: error handling across HTTP 200 with error code, 400, 401, 429, and 503 HTML", async () => {
+  let mockStatus = 200;
+  let mockResponse = {};
+
+  const fetchFn = mockFetch(async () => {
+    return {
+      ok: mockStatus >= 200 && mockStatus < 300,
+      status: mockStatus,
+      statusText: `Status ${mockStatus}`,
+      text: async () => (typeof mockResponse === "string" ? mockResponse : JSON.stringify(mockResponse)),
+    };
+  });
+
+  const adapter = new MexcAdapter({ apiKey: "k", secret: "s", fetchFn });
+
+  // 1. HTTP 200 with MEXC business error code
+  mockStatus = 200;
+  mockResponse = { success: false, code: 2001, message: "System busy" };
+  await assert.rejects(
+    async () => adapter.getBalance(),
+    /System busy/
+  );
+
+  // 2. HTTP 400 Bad Request
+  mockStatus = 400;
+  mockResponse = { code: 400, message: "Invalid parameters" };
+  await assert.rejects(
+    async () => adapter.getBalance(),
+    /MEXC API error \(400\): Invalid parameters/
+  );
+
+  // 3. HTTP 401 Unauthorized
+  mockStatus = 401;
+  mockResponse = { code: 401, message: "Signature error" };
+  await assert.rejects(
+    async () => adapter.getBalance(),
+    /MEXC API error \(401\): Signature error/
+  );
+
+  // 4. HTTP 429 Rate limit
+  mockStatus = 429;
+  mockResponse = { code: 429, message: "Too many requests" };
+  await assert.rejects(
+    async () => adapter.getBalance(),
+    /MEXC API error \(429\): Too many requests/
+  );
+
+  // 5. HTTP 503 HTML maintenance page
+  mockStatus = 503;
+  mockResponse = "<html><body>503 Service Temporarily Unavailable</body></html>";
+  await assert.rejects(
+    async () => adapter.getBalance(),
+    /MEXC API error \(503\): Status 503/
+  );
+});
+
