@@ -1,7 +1,7 @@
 /* OI Sniper dashboard — vanilla JS, no build step. */
 
-import { fetchCoinMarkets, fetchTopMarkets, mergeTopRows } from "/cg-browser.js";
-import { initApi, api as localApi, takeOverEngine, onLiveTick, onStatusChange, isLeaderTab, APP_VERSION } from "/web/api.js";
+import { fetchCoinMarkets, fetchTopMarkets, mergeTopRows } from "./cg-browser.js";
+import { initApi, api as localApi, takeOverEngine, onLiveTick, onStatusChange, isLeaderTab, APP_VERSION } from "./web/api.js";
 
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => [...document.querySelectorAll(sel)];

@@ -67,7 +67,7 @@ function checkBrowserSupport() {
 function spawnWorker() {
   if (worker) return worker;
   console.log("[api] Spawning dedicated Web Worker...");
-  worker = new Worker("/web/worker.js", { type: "module" });
+  worker = new Worker(new URL("./worker.js", import.meta.url), { type: "module" });
 
   worker.onmessage = (e) => {
     const msg = e.data;
