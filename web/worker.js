@@ -66,7 +66,7 @@ async function boot() {
       try {
         const creds = await getCredentials(activeVenue, { idbStore: store });
         if (creds && creds.apiKey && creds.secret) {
-          const adapter = createVenueAdapter(activeVenue, { apiKey: creds.apiKey, secret: creds.secret });
+          const adapter = createVenueAdapter(activeVenue, { apiKey: creds.apiKey, secret: creds.secret, passphrase: creds.passphrase });
           engine.setLiveAdapter(adapter);
           console.log(`[worker] Restored live adapter for ${activeVenue}`);
         }

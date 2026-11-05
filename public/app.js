@@ -2376,6 +2376,7 @@ function setupExchangeUi() {
 
     $("#wizardApiKey").value = "";
     $("#wizardSecret").value = "";
+    if ($("#wizardPassphrase")) $("#wizardPassphrase").value = "";
     $("#wizardTestFeedback").classList.add("hidden");
     $("#wizardPassphraseRow").classList.add("hidden");
 
@@ -2385,6 +2386,14 @@ function setupExchangeUi() {
     } else if (venueId === "bybit") {
       $("#wizardTitle").textContent = "Connect Bybit V5 Linear";
       $("#wizardInstructions").textContent = "Create an API Key on Bybit with Contract 'Orders & Positions' checked. Leave Withdrawals UNCHECKED.";
+    } else if (venueId === "gate") {
+      $("#wizardTitle").textContent = "Connect Gate.io USDT Futures";
+      $("#wizardInstructions").textContent = "Create an API Key on Gate.io with 'Futures trading' enabled. DO NOT check 'Withdraw' or 'Wallet' write permissions.";
+      $("#wizardPassphraseRow").classList.add("hidden");
+    } else if (venueId === "kucoin") {
+      $("#wizardTitle").textContent = "Connect KuCoin Futures";
+      $("#wizardInstructions").textContent = "Create an API Key on KuCoin with 'Futures Trading' enabled. DO NOT check 'Transfer' or 'Withdraw'. Enter your API Passphrase below.";
+      $("#wizardPassphraseRow").classList.remove("hidden");
     }
   }
 
@@ -2400,6 +2409,10 @@ function setupExchangeUi() {
       const feedback = $("#wizardTestFeedback");
       if (!apiKey || !secret) {
         toast("Missing fields", "error", "Please provide API Key and Secret.");
+        return;
+      }
+      if (selectedVenue === "kucoin" && !passphrase) {
+        toast("Missing passphrase", "error", "KuCoin requires an API Passphrase.");
         return;
       }
 
@@ -2436,6 +2449,10 @@ function setupExchangeUi() {
       const passphrase = $("#wizardPassphrase")?.value.trim() || undefined;
       if (!apiKey || !secret) {
         toast("Missing fields", "error", "Please provide API Key and Secret.");
+        return;
+      }
+      if (selectedVenue === "kucoin" && !passphrase) {
+        toast("Missing passphrase", "error", "KuCoin requires an API Passphrase.");
         return;
       }
 

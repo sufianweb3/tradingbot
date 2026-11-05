@@ -317,7 +317,7 @@ export async function handleRpcRequest({ path, method = "GET", body = {}, query 
       }
       let adapter;
       try {
-        adapter = createVenueAdapter(venue, { apiKey, secret });
+        adapter = createVenueAdapter(venue, { apiKey, secret, passphrase });
       } catch (err) {
         return { status: 400, data: { ok: false, error: err.message } };
       }
@@ -368,7 +368,7 @@ export async function handleRpcRequest({ path, method = "GET", body = {}, query 
 
       let adapter;
       try {
-        adapter = createVenueAdapter(venue, { apiKey, secret });
+        adapter = createVenueAdapter(venue, { apiKey, secret, passphrase });
       } catch (err) {
         return { status: 400, data: { ok: false, error: err.message } };
       }
@@ -482,7 +482,7 @@ export async function handleRpcRequest({ path, method = "GET", body = {}, query 
             },
           };
         }
-        const adapter = createVenueAdapter(activeVenue, { apiKey: creds.apiKey, secret: creds.secret });
+        const adapter = createVenueAdapter(activeVenue, { apiKey: creds.apiKey, secret: creds.secret, passphrase: creds.passphrase });
         const val = await adapter.validateKey(creds);
         if (!val.ok) {
           return {

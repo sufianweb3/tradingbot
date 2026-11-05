@@ -95,6 +95,18 @@ export async function hmacSha512(secret, message) {
 }
 
 /**
+ * Compute SHA-512 digest encoded as lowercase hex string.
+ * @param {string|Uint8Array} message
+ * @returns {Promise<string>} Hex-encoded SHA-512 hash
+ */
+export async function sha512Hex(message = "") {
+  const enc = new TextEncoder();
+  const msgBytes = typeof message === "string" ? enc.encode(message) : new Uint8Array(message || []);
+  const hashBuf = await globalThis.crypto.subtle.digest("SHA-512", msgBytes);
+  return bufToHex(hashBuf);
+}
+
+/**
  * Set the clock drift offset in ms for a venue.
  */
 export function setClockOffset(venueId, offsetMs) {
@@ -247,3 +259,119 @@ export async function signBybitRequest({
     timestamp: Number(ts),
   };
 }
+
+/**
+ * Sign a Gate.io APIv4 request (HMAC-SHA512).
+ * Format:
+ * Method + "\n" + URL_Path + "\n" + QueryString + "\n" + HexEncode(SHA512(Body)) + "\n" + Timestamp
+ * Headers: KEY, SIGN, Timestamp (seconds), Content-Type: application/json, Accept: application/json
+ */
+export async function signGateRequest({
+  apiKey,
+  secret,
+  method = "GET",
+  path,
+  params = {},
+  body = null,
+  timestamp = null,
+}) {
+  if (!apiKey || !secret) {
+    throw new Error("Gate.io signing requires apiKey and secret.");
+  }
+  if (!path) {
+    throw new Error("Gate.io signing requires a URL path.");
+  }
+
+  const m = method.toUpperCase();
+  const ts = String(
+    timestamp !== null && timestamp !== undefined
+      ? timestamp
+      : Math.floor(getAdjustedTime("gate") / 1000)
+  );
+
+  const queryString = buildQueryString(params);
+  const bodyStr = body ? (typeof body === "string" ? body : JSON.stringify(body)) : "";
+  const hashedPayload = await sha512Hex(bodyStr);
+
+  const signString = `${m}\n${path}\n${queryString}\n${hashedPayload}\n${ts}`;
+  const signature = await hmacSha512(secret, signString);
+
+  return {
+    headers: {
+      KEY: apiKey,
+      SIGN: signature,
+      Timestamp: ts,
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    signature,
+    timestamp: Number(ts),
+    queryString,
+    bodyStr,
+    hashedPayload,
+    signString,
+  };
+}
+
+/**
+ * Sign a KuCoin Futures request (HMAC-SHA256 Base64, API Key Version 2).
+ * Passphrase signed: hmacSha256Base64(secret, passphrase)
+ * Sign string: TimestampInMs + Method + Endpoint + Body
+ * Headers: KC-API-KEY, KC-API-SIGN, KC-API-TIMESTAMP, KC-API-PASSPHRASE, KC-API-KEY-VERSION: 2
+ */
+export async function signKuCoinRequest({
+  apiKey,
+  secret,
+  passphrase,
+  method = "GET",
+  endpoint,
+  params = {},
+  body = null,
+  timestamp = null,
+}) {
+  if (!apiKey || !secret || !passphrase) {
+    throw new Error("KuCoin signing requires apiKey, secret, and passphrase.");
+  }
+  if (!endpoint) {
+    throw new Error("KuCoin signing requires an endpoint path.");
+  }
+
+  const m = method.toUpperCase();
+  const ts = String(
+    timestamp !== null && timestamp !== undefined
+      ? timestamp
+      : getAdjustedTime("kucoin")
+  );
+
+  let fullEndpoint = endpoint;
+  const qs = buildQueryString(params);
+  if (qs) {
+    fullEndpoint = fullEndpoint.includes("?") ? `${fullEndpoint}&${qs}` : `${fullEndpoint}?${qs}`;
+  }
+
+  const bodyStr = body ? (typeof body === "string" ? body : JSON.stringify(body)) : "";
+  const signedPassphrase = await hmacSha256Base64(secret, passphrase);
+
+  const signString = `${ts}${m}${fullEndpoint}${bodyStr}`;
+  const signature = await hmacSha256Base64(secret, signString);
+
+  return {
+    headers: {
+      "KC-API-KEY": apiKey,
+      "KC-API-SIGN": signature,
+      "KC-API-TIMESTAMP": ts,
+      "KC-API-PASSPHRASE": signedPassphrase,
+      "KC-API-KEY-VERSION": "2",
+      "Content-Type": "application/json",
+    },
+    signature,
+    signedPassphrase,
+    timestamp: Number(ts),
+    endpoint: fullEndpoint,
+    bodyStr,
+    signString,
+  };
+}
+
+export const signKucoinRequest = signKuCoinRequest;
+

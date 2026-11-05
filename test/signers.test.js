@@ -7,8 +7,12 @@ import {
   hmacSha256,
   hmacSha512,
   setClockOffset,
+  sha512Hex,
   signBinanceRequest,
   signBybitRequest,
+  signGateRequest,
+  signKuCoinRequest,
+  signKucoinRequest,
   syncTime,
 } from "../src/signers.js";
 
@@ -96,3 +100,91 @@ test("signers: signBybitRequest formats V5 headers and signature payload", async
   assert.ok(res.headers["X-BAPI-SIGN"].length === 64);
   assert.equal(res.bodyStr, JSON.stringify(body));
 });
+
+test("signers: sha512Hex computes standard SHA-512 hashes", async () => {
+  // Empty string vector
+  const emptyHash = await sha512Hex("");
+  assert.equal(
+    emptyHash,
+    "cf83e1357eefb8bdf1542850d66d8007d620e4050b5715dc83f4a921d36ce9ce47d0d13c5d85f2b0ff8318d2877eec2f63b931bd47417a81a538327af927da3e"
+  );
+
+  // Vector for "abc"
+  const abcHash = await sha512Hex("abc");
+  assert.equal(
+    abcHash,
+    "ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f"
+  );
+});
+
+test("signers: signGateRequest formats APIv4 HMAC-SHA512 headers and payload", async () => {
+  const apiKey = "gate-test-api-key";
+  const secret = "gate-test-secret";
+  const body = { contract: "BTC_USDT", size: 10, price: "0", tif: "ioc" };
+  const res = await signGateRequest({
+    apiKey,
+    secret,
+    method: "POST",
+    path: "/api/v4/futures/usdt/orders",
+    params: {},
+    body,
+    timestamp: 1700000000,
+  });
+
+  assert.equal(res.headers["KEY"], apiKey);
+  assert.equal(res.headers["Timestamp"], "1700000000");
+  assert.equal(res.headers["Content-Type"], "application/json");
+  assert.equal(res.headers["Accept"], "application/json");
+  assert.ok(res.headers["SIGN"].length === 128); // SHA-512 hex is 128 characters
+  assert.equal(res.bodyStr, JSON.stringify(body));
+  assert.ok(res.signString.includes("POST\n/api/v4/futures/usdt/orders\n\n"));
+  assert.ok(res.signString.endsWith("\n1700000000"));
+
+  // Check required validation
+  await assert.rejects(
+    () => signGateRequest({ apiKey: "", secret }),
+    /requires apiKey and secret/i
+  );
+  await assert.rejects(
+    () => signGateRequest({ apiKey, secret, path: "" }),
+    /requires a URL path/i
+  );
+});
+
+test("signers: signKuCoinRequest formats HMAC-SHA256 Base64 headers, signed passphrase, and signature", async () => {
+  const apiKey = "kucoin-test-api-key";
+  const secret = "kucoin-test-secret";
+  const passphrase = "kucoin-passphrase-123";
+  const body = { clientOid: "test-oid-1", symbol: "XBTUSDTM", type: "market", size: 1 };
+  const res = await signKuCoinRequest({
+    apiKey,
+    secret,
+    passphrase,
+    method: "POST",
+    endpoint: "/api/v1/orders",
+    body,
+    timestamp: 1700000000000,
+  });
+
+  assert.equal(res.headers["KC-API-KEY"], apiKey);
+  assert.equal(res.headers["KC-API-TIMESTAMP"], "1700000000000");
+  assert.equal(res.headers["KC-API-KEY-VERSION"], "2");
+  assert.ok(res.headers["KC-API-SIGN"].length > 20); // Base64 signature
+  assert.ok(res.headers["KC-API-PASSPHRASE"].length > 10); // Base64 signed passphrase
+  assert.equal(res.endpoint, "/api/v1/orders");
+  assert.equal(res.bodyStr, JSON.stringify(body));
+
+  // Test alias
+  assert.equal(typeof signKucoinRequest, "function");
+
+  // Check required validation
+  await assert.rejects(
+    () => signKuCoinRequest({ apiKey: "", secret, passphrase, endpoint: "/test" }),
+    /requires apiKey, secret, and passphrase/i
+  );
+  await assert.rejects(
+    () => signKuCoinRequest({ apiKey, secret, passphrase: "", endpoint: "/test" }),
+    /requires apiKey, secret, and passphrase/i
+  );
+});
+
