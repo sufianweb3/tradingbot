@@ -18,8 +18,18 @@
  * the sample interval with AI_TRADE_INTERVAL_MS (minimum 250 ms).
  */
 
-import fs from "node:fs";
-import path from "node:path";
+let fs = null;
+let path = null;
+if (typeof process !== "undefined" && process?.versions?.node) {
+  try {
+    const fsMod = await import("node:fs");
+    fs = fsMod.default || fsMod;
+    const pathMod = await import("node:path");
+    path = pathMod.default || pathMod;
+  } catch {
+    /* browser environment */
+  }
+}
 import { iso, now, round, toNum } from "./util.js";
 import { positionMetrics } from "./trading.js";
 

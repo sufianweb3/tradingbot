@@ -15,9 +15,21 @@
  * have no filesystem); the API still returns the activity log there.
  */
 
-import fs from "node:fs";
-import path from "node:path";
-import readline from "node:readline";
+let fs = null;
+let path = null;
+let readline = null;
+if (typeof process !== "undefined" && process?.versions?.node) {
+  try {
+    const fsMod = await import("node:fs");
+    fs = fsMod.default || fsMod;
+    const pathMod = await import("node:path");
+    path = pathMod.default || pathMod;
+    const readlineMod = await import("node:readline");
+    readline = readlineMod.default || readlineMod;
+  } catch {
+    /* browser environment */
+  }
+}
 import { now } from "./util.js";
 
 export const LOG_EXPORT_SCHEMA = "oi-bot-log-export/v1";

@@ -10,8 +10,18 @@
  * normalises the fields used by the strategy.
  */
 
-import crypto from "node:crypto";
-import zlib from "node:zlib";
+let crypto = null;
+let zlib = null;
+if (typeof process !== "undefined" && process?.versions?.node) {
+  try {
+    const cryptoMod = await import("node:crypto");
+    crypto = cryptoMod.default || cryptoMod;
+    const zlibMod = await import("node:zlib");
+    zlib = zlibMod.default || zlibMod;
+  } catch {
+    /* browser environment */
+  }
+}
 import { OI_FIELD, VOL_FIELD } from "./trading.js";
 import { sleep, toNum } from "./util.js";
 
