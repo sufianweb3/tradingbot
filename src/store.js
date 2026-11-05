@@ -2,8 +2,19 @@
  * JSON persistence + settings schema/normalisation.
  */
 
-import fs from "node:fs";
-import path from "node:path";
+// Guard Node filesystem imports for browser Web Worker compatibility
+let fs = null;
+let path = null;
+if (typeof process !== "undefined" && process?.versions?.node) {
+  try {
+    const fsMod = await import("node:fs");
+    fs = fsMod.default || fsMod;
+    const pathMod = await import("node:path");
+    path = pathMod.default || pathMod;
+  } catch {
+    /* browser environment */
+  }
+}
 import { DEFAULT_VENUES } from "./exchanges.js";
 import { OI_TIMEFRAMES, VOL_TIMEFRAMES } from "./trading.js";
 import { clamp, deepMerge, now, toNum } from "./util.js";
