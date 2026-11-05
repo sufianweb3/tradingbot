@@ -335,6 +335,7 @@ select { cursor: pointer; appearance: none; background-image: linear-gradient(45
 .side-tag { display: inline-flex; padding: 1.5px 7px; border-radius: 999px; font-size: 9.5px; font-weight: 800; letter-spacing: .45px; text-transform: uppercase; }
 .side-tag.long { background: var(--green-soft); color: var(--green); border: 1px solid rgba(22,211,154,.3); }
 .side-tag.short { background: var(--red-soft); color: var(--red); border: 1px solid rgba(255,93,108,.3); }
+.side-tag.conflict { background: rgba(255,170,0,.15); color: #ffaa00; border: 1px solid rgba(255,170,0,.35); }
 .side-tag.muted { background: #111a24; color: var(--dim); border: 1px solid var(--line); }
 .pass-pill { display: inline-flex; align-items: center; gap: 4px; font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 999px; }
 .pass-pill.yes { background: var(--green-soft); color: var(--green); }

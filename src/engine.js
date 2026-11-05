@@ -576,11 +576,54 @@ export class Engine {
     const available = this._equitySnapshot().available;
     const rows = [];
 
+    const longProfile = s.profiles?.long;
+    const shortProfile = s.profiles?.short;
+    const longActive = Boolean(longProfile?.enabled);
+    const shortActive = Boolean(shortProfile?.enabled);
+
     for (const coin of this.marketCache.coins) {
-      const ev = evaluateCoin(coin, s);
+      const longEv = longActive
+        ? evaluateCoin(coin, longProfile, "long")
+        : { qualified: false, configured: false };
+      const shortEv = shortActive
+        ? evaluateCoin(coin, shortProfile, "short")
+        : { qualified: false, configured: false };
+
+      let isConflict = false;
+      let qualified = false;
+      let side = null;
+      let ev = longEv.configured ? longEv : shortEv.configured ? shortEv : longEv;
+
+      if (longEv.qualified && shortEv.qualified) {
+        // S5: A coin passing both profiles is skipped and logged as conflict
+        isConflict = true;
+        qualified = false;
+        side = "conflict";
+        ev = longEv;
+      } else if (longEv.qualified) {
+        qualified = true;
+        side = "long";
+        ev = longEv;
+      } else if (shortEv.qualified) {
+        qualified = true;
+        side = "short";
+        ev = shortEv;
+      } else if (longActive && longEv.configured) {
+        side = "long";
+        ev = longEv;
+      } else if (shortActive && shortEv.configured) {
+        side = "short";
+        ev = shortEv;
+      } else {
+        ev = evaluateCoin(coin, s);
+        side = ev.side;
+        qualified = ev.qualified;
+      }
+
       const entry = this.hub.resolve(coin.symbol);
       const explicitExcluded = excludedSet.has(coin.symbol);
       const tradable = Boolean(entry) || Boolean(s.allowCoinglassPrice && coin.price > 0);
+      const activeProfile = (side === "short" ? shortProfile : longProfile) || s;
       const row = {
         symbol: coin.symbol,
         name: coin.name,
@@ -601,23 +644,25 @@ export class Engine {
         excluded: explicitExcluded,
         open: openSymbols.has(coin.symbol),
         openCount: openCounts.get(coin.symbol) || 0,
-        maxPerCoin: Math.max(1, toNum(s.maxPositionsPerCoin, 1) ?? 1),
+        maxPerCoin: Math.max(1, toNum(activeProfile.maxPositionsPerCoin, 1) ?? 1),
         cooling: this._isCooling(coin.symbol),
         coolingRemainingSec: this._coolingRemainingSec(coin.symbol),
-        configured: ev.configured,
-        qualified: ev.qualified,
-        side: ev.side,
-        passCount: ev.passCount,
-        total: ev.total,
+        isConflict,
+        configured: Boolean(ev.configured),
+        qualified,
+        side,
+        passCount: ev.passCount || 0,
+        total: ev.total || 0,
         score: ev.configured ? round(scoreCandidate(coin, ev), 4) : 0,
       };
       if (row.oiUsd < s.minOiUsd || coin.volUsd24h < s.minVolUsd24h) row.tradable = false;
-      row.blockReason = ev.qualified ? this._blockReason(row, s, available) : null;
+      row.blockReason = isConflict || qualified ? this._blockReason(row, s, available) : null;
       rows.push(row);
     }
 
     rows.sort((a, b) => {
       if (a.qualified !== b.qualified) return a.qualified ? -1 : 1;
+      if (a.isConflict !== b.isConflict) return a.isConflict ? 1 : -1;
       if (a.passCount !== b.passCount) return b.passCount - a.passCount;
       if (a.score !== b.score) return b.score - a.score;
       return b.oiUsd - a.oiUsd;
@@ -655,14 +700,22 @@ export class Engine {
    * mystery: cooling, no price feed, stale data, coin cap, margin, etc.
    */
   _blockReason(row, s = this.state.settings, availableOverride = null) {
+    if (row.isConflict) return "conflict";
     if (row.excluded) return "excluded";
     if (row.stale) return "stale";
     if (!row.tradable) return "no-feed";
     if (row.cooling) return "cooling";
-    if (!this._canOpenMore(row.symbol)) return "coin-cap";
-    if (this._maxOpenReached()) return "max-open";
+    const side = row.side === "short" ? "short" : "long";
+    const oppositeSide = side === "long" ? "short" : "long";
+    if (this.state.positions.some((p) => p.symbol === row.symbol && p.side === oppositeSide)) {
+      return "opposite-position";
+    }
+    if (!this._canOpenMore(row.symbol, side)) return "coin-cap";
+    if (this._maxOpenReached(side)) return "max-open";
+    if (this._maxTradesReached(side)) return "max-trades";
     if (!(toNum(row.price, 0) > 0)) return "no-price";
-    const sizing = this._allocationFor(toNum(row.price, 0));
+    const profile = s.profiles?.[side] || s;
+    const sizing = this._allocationFor(toNum(row.price, 0), profile);
     if (!(sizing.margin > 0) || !(sizing.qty > 0)) return "no-size";
     const entryFee = sizing.notional * (toNum(s.feePercent, 0) / 100);
     const available = availableOverride === null ? this._equitySnapshot().available : availableOverride;
@@ -740,42 +793,74 @@ export class Engine {
     });
   }
 
-  _maxTradesReached() {
-    const max = toNum(this.state.settings.maxTrades, 0) ?? 0;
-    return max > 0 && this.state.trades.length >= max;
+  _maxTradesReached(side = null) {
+    const s = this.state.settings;
+    const globalMax = toNum(s.maxTrades, 0) ?? 0;
+    if (globalMax > 0 && this.state.trades.length >= globalMax) return true;
+    if (side) {
+      const profile = s.profiles?.[side];
+      const pMax = toNum(profile?.maxTrades, 0) ?? 0;
+      if (pMax > 0) {
+        const sideTrades = this.state.trades.filter((t) => t.side === side).length;
+        if (sideTrades >= pMax) return true;
+      }
+    }
+    return false;
   }
 
-  _maxOpenReached() {
-    const max = toNum(this.state.settings.maxOpenPositions, 0) ?? 0;
-    return max > 0 && this.state.positions.length >= max;
+  _maxOpenReached(side = null) {
+    const s = this.state.settings;
+    const globalMax = toNum(s.maxOpenPositions, 0) ?? 0;
+    if (globalMax > 0 && this.state.positions.length >= globalMax) return true;
+    if (side) {
+      const profile = s.profiles?.[side];
+      const pMax = toNum(profile?.maxOpenPositions, 0) ?? 0;
+      if (pMax > 0) {
+        const sideOpen = this.state.positions.filter((p) => p.side === side).length;
+        if (sideOpen >= pMax) return true;
+      }
+    }
+    return false;
   }
 
   /** Positions currently open on one coin. */
-  _openCount(symbol) {
-    return this.state.positions.filter((p) => p.symbol === symbol).length;
+  _openCount(symbol, side = null) {
+    return this.state.positions.filter(
+      (p) => p.symbol === symbol && (!side || p.side === side)
+    ).length;
   }
 
-  /** True when another position may be opened on this coin. */
-  _canOpenMore(symbol) {
-    const max = Math.max(1, toNum(this.state.settings.maxPositionsPerCoin, 1) ?? 1);
-    return this._openCount(symbol) < max;
-  }
-
-  _allocationFor(price) {
+  /** True when another position may be opened on this coin. Enforces PRD S6 one-way mode. */
+  _canOpenMore(symbol, side = "long") {
     const s = this.state.settings;
-    const lev = Math.max(1, toNum(s.leverage, 1));
-    if (s.sizingMode === "fixedQty") {
-      const qty = toNum(s.fixedQty, 0);
+    const profile = s.profiles?.[side] || s;
+    const oppositeSide = side === "long" ? "short" : "long";
+    const hasOpposite = this.state.positions.some(
+      (p) => p.symbol === symbol && p.side === oppositeSide
+    );
+    if (hasOpposite) return false;
+
+    const max = Math.max(1, toNum(profile.maxPositionsPerCoin, 1) ?? 1);
+    return this._openCount(symbol, side) < max;
+  }
+
+  _allocationFor(price, profile = null) {
+    const p = profile || this.state.settings.profiles?.long || this.state.settings;
+    const lev = Math.max(1, toNum(p.leverage, 1));
+    if (p.sizingMode === "fixedQty") {
+      const qty = toNum(p.fixedQty, 0);
       const notional = qty * price;
       return { margin: notional / lev, qty, notional, lev };
     }
     let margin;
-    if (s.sizingMode === "fixedMargin") {
-      margin = toNum(s.fixedMargin, 0) ?? 0;
+    if (p.sizingMode === "fixedMargin") {
+      margin = toNum(p.fixedMargin, 0) ?? 0;
     } else {
       const base =
-        s.allocationBase === "equity" ? this._equitySnapshot().equity : toNum(s.totalFund, 0);
-      margin = (base * toNum(s.allocationPercent, 50)) / 100;
+        p.allocationBase === "equity"
+          ? this._equitySnapshot().equity
+          : toNum(this.state.settings.totalFund, 0);
+      margin = (base * toNum(p.allocationPercent, 50)) / 100;
     }
     const notional = margin * lev;
     return { margin, qty: notional / price, notional, lev };
@@ -830,7 +915,10 @@ export class Engine {
       result.total = this.marketCache.coins.length;
       result.stale = now() - this.marketCache.at > 150000;
 
-      const filters = enabledFilterCount(s);
+      const filters =
+        enabledFilterCount(s.profiles?.long) +
+        enabledFilterCount(s.profiles?.short) +
+        enabledFilterCount(s);
       if (filters === 0) {
         result.error = "no-filters";
         result.ok = false;
@@ -850,7 +938,8 @@ export class Engine {
           !r.excluded &&
           r.tradable &&
           !r.stale &&
-          this._canOpenMore(r.symbol)
+          !r.isConflict &&
+          this._canOpenMore(r.symbol, r.side)
       );
       result.qualified = rows.filter((r) => r.qualified).length;
       result.scanned = rows.filter((r) => r.configured).length;
@@ -874,17 +963,23 @@ export class Engine {
       const opened = [];
       for (const row of candidates.slice(0, MAX_SCAN_COINS)) {
         if (!this.state.meta.running) break;
-        if (this._maxTradesReached()) break;
-        if (this._maxOpenReached()) break;
+        if (row.isConflict || row.side === "conflict") {
+          this.log("warn", `Skip conflict: ${row.symbol} qualified for both Long and Short profiles.`);
+          continue;
+        }
+        const side = row.side === "short" ? "short" : "long";
+        if (this._maxTradesReached(side)) break;
+        if (this._maxOpenReached(side)) break;
         const coin = coinMap.get(row.symbol);
         if (!coin) continue;
-        const ev = evaluateCoin(coin, s);
+        const profile = s.profiles?.[side] || s;
+        const ev = evaluateCoin(coin, profile, side);
         if (!ev.qualified || !ev.side) continue;
         const quote = await this._resolveQuote(coin);
         if (!quote) continue;
-        const pos = this._openPosition(coin, quote, ev);
+        const pos = this._openPosition(coin, quote, ev, profile);
         if (pos) {
-          opened.push(pos.symbol);
+          opened.push(`${pos.side.toUpperCase()} ${pos.symbol}`);
           result.opened++;
         }
       }
@@ -968,12 +1063,13 @@ export class Engine {
     return null;
   }
 
-  _openPosition(coin, quote, evaluation) {
+  _openPosition(coin, quote, evaluation, profile = null) {
     const s = this.state.settings;
     const side = evaluation.side;
     if (side !== "long" && side !== "short") return null;
-    if (!this._canOpenMore(coin.symbol)) return null;
-    if (this._maxOpenReached()) return null;
+    const p = profile || s.profiles?.[side] || s;
+    if (!this._canOpenMore(coin.symbol, side)) return null;
+    if (this._maxOpenReached(side)) return null;
     if (this._isCooling(coin.symbol)) return null;
 
     const price = toNum(quote.price);
@@ -981,7 +1077,7 @@ export class Engine {
     const fillPrice = applySlippage(price, side, "entry", s.slippagePercent);
     if (!(fillPrice > 0)) return null;
 
-    const sizing = this._allocationFor(fillPrice);
+    const sizing = this._allocationFor(fillPrice, p);
     const margin = sizing.margin;
     const qty = sizing.qty;
     const notional = sizing.notional;
@@ -993,12 +1089,13 @@ export class Engine {
     const available = this._equitySnapshot().available;
     if (margin > available + entryFee + 1e-6) return null;
 
-    const levels = computeLevels({ side, entry: fillPrice, settings: s });
+    const levels = computeLevels({ side, entry: fillPrice, settings: { ...s, ...p } });
     const pos = {
       id: uid("pos_"),
       status: "open",
       symbol: coin.symbol,
       side,
+      profile: side,
       venue: quote.venue,
       venueName: quote.venueName,
       venueSymbol: quote.venueSymbol,
@@ -1025,8 +1122,8 @@ export class Engine {
       liqPrice: levels.liqPrice,
       trailMove: levels.trailMove,
       tp1Hit: false,
-      trailingEnabled: Boolean(s.trailingEnabled),
-      trailingStart: s.trailingStart,
+      trailingEnabled: Boolean(p.trailingEnabled),
+      trailingStart: p.trailingStart,
       trailingActive: false,
       trailStopPrice: null,
       peakPrice: fillPrice,
@@ -1040,11 +1137,11 @@ export class Engine {
       feePercent: s.feePercent,
       slippagePercent: s.slippagePercent,
       riskMode: s.riskMode,
-      slPercent: s.slPercent,
-      tp1Percent: s.tp1Percent,
-      tpMaxPercent: s.tpMaxPercent,
-      tp1ClosePercent: s.tp1ClosePercent,
-      trailingDistancePercent: s.trailingDistancePercent,
+      slPercent: p.slPercent,
+      tp1Percent: p.tp1Percent,
+      tpMaxPercent: p.tpMaxPercent,
+      tp1ClosePercent: p.tp1ClosePercent,
+      trailingDistancePercent: p.trailingDistancePercent,
       criteria: evaluation.checks.map((c) => ({ ...c })),
       signal: {
         oi: { ...coin.oi },
@@ -1281,6 +1378,7 @@ export class Engine {
       id: pos.id,
       symbol: pos.symbol,
       side: pos.side,
+      profile: pos.profile || pos.side,
       venue: pos.venue,
       venueName: pos.venueName,
       venueSymbol: pos.venueSymbol,
@@ -1376,22 +1474,10 @@ export class Engine {
     return { ok: true, closed: closed.length, trades: closed };
   }
 
-  async openManual(symbol, { force = true } = {}) {
+  async openManual(symbol, { force = true, side = null } = {}) {
     const s = this.state.settings;
     const wanted = String(symbol || "").toUpperCase();
     if (!wanted) return { ok: false, error: "symbol-required" };
-    if (!this._canOpenMore(wanted)) {
-      return {
-        ok: false,
-        error: "already-open",
-        maxPerCoin: Math.max(1, toNum(s.maxPositionsPerCoin, 1) ?? 1),
-      };
-    }
-    const cooling = this._coolingRemainingSec(wanted);
-    if (cooling > 0) {
-      return { ok: false, error: "cooling", remainingSec: cooling, cooldownSec: s.cooldownSec };
-    }
-    if (this._maxOpenReached()) return { ok: false, error: "max-open" };
     try {
       await this._marketData();
     } catch {
@@ -1399,18 +1485,37 @@ export class Engine {
     }
     const coin = this.marketCache.coins.find((c) => c.symbol === wanted);
     if (!coin) return { ok: false, error: "coin-not-found" };
-    const ev = evaluateCoin(coin, s);
-    if (!force && !ev.qualified) return { ok: false, error: "criteria-not-met", evaluation: ev };
-    const side = ev.side || (s.direction === "short" ? "short" : "long");
+    const longEv = s.profiles?.long ? evaluateCoin(coin, s.profiles.long, "long") : evaluateCoin(coin, s);
+    const shortEv = s.profiles?.short ? evaluateCoin(coin, s.profiles.short, "short") : null;
+    const targetSide =
+      side ||
+      (shortEv?.qualified && !longEv?.qualified ? "short" : longEv?.qualified ? "long" : s.direction === "short" ? "short" : "long");
+    const profile = s.profiles?.[targetSide] || s;
+
+    if (!this._canOpenMore(wanted, targetSide)) {
+      return {
+        ok: false,
+        error: "already-open",
+        maxPerCoin: Math.max(1, toNum(profile.maxPositionsPerCoin, 1) ?? 1),
+      };
+    }
+    const cooling = this._coolingRemainingSec(wanted);
+    if (cooling > 0) {
+      return { ok: false, error: "cooling", remainingSec: cooling, cooldownSec: s.cooldownSec };
+    }
+    if (this._maxOpenReached(targetSide)) return { ok: false, error: "max-open" };
+
+    const activeEv = targetSide === "short" && shortEv ? shortEv : longEv;
+    if (!force && !activeEv.qualified) return { ok: false, error: "criteria-not-met", evaluation: activeEv };
     const quote = await this._resolveQuote(coin);
     if (!quote) return { ok: false, error: "no-price-feed" };
-    const pos = this._openPosition(coin, quote, { ...ev, side, qualified: true });
+    const pos = this._openPosition(coin, quote, { ...activeEv, side: targetSide, qualified: true }, profile);
     if (!pos) {
       const reason = this._blockReason(
-        { symbol: wanted, excluded: false, stale: false, tradable: true, cooling: false, price: coin.price },
+        { symbol: wanted, side: targetSide, excluded: false, stale: false, tradable: true, cooling: false, price: coin.price },
         s
       );
-      const sizing = this._allocationFor(toNum(coin.price, 0));
+      const sizing = this._allocationFor(toNum(coin.price, 0), profile);
       return {
         ok: false,
         error: "cannot-open",

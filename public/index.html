@@ -73,43 +73,91 @@
 
       <div class="panel-body settings-body">
 
+        <div class="profile-tabs-header" style="margin-bottom: 14px; padding-bottom: 12px; border-bottom: 1px solid var(--line);">
+          <div class="tabs profile-tabs" id="profileTabs" style="display:flex; width:100%; margin-bottom: 10px;">
+            <button class="tab active" data-profile="long" type="button" style="flex:1; text-align:center;">🟢 Long Profile</button>
+            <button class="tab" data-profile="short" type="button" style="flex:1; text-align:center;">🔴 Short Profile</button>
+          </div>
+          <label class="switch-row">
+            <span class="switch"><input type="checkbox" id="profileEnabled"><i></i></span>
+            <span id="profileEnabledLabel" style="font-weight: 700;">Enable Long Profile</span>
+          </label>
+        </div>
+
         <section class="setting-group">
-          <div class="group-head"><h3>Capital &amp; sizing</h3><span class="hint">How much paper capital each trade uses</span></div>
+          <div class="group-head"><h3>Profile sizing</h3><span class="hint">Capital allocation for this profile</span></div>
           <div class="field-grid">
-            <label class="field"><span>Total fund (USDT)</span><input type="number" min="1" step="1" data-setting="totalFund"></label>
-            <label class="field"><span>Leverage</span><input type="number" min="1" max="200" step="1" data-setting="leverage"></label>
+            <label class="field"><span>Leverage</span><input type="number" min="1" max="200" step="1" data-profile-setting="leverage"></label>
             <label class="field"><span>Position sizing</span>
-              <select data-setting="sizingMode">
+              <select data-profile-setting="sizingMode">
                 <option value="allocation">% of fund</option>
                 <option value="fixedMargin">Fixed margin ($)</option>
                 <option value="fixedQty">Fixed quantity (coins)</option>
               </select>
             </label>
-            <label class="field" data-show="allocation"><span>Per trade (% of fund)</span><input type="number" min="0.1" max="100" step="0.1" data-setting="allocationPercent"></label>
+            <label class="field" data-show="allocation"><span>Per trade (% of fund)</span><input type="number" min="0.1" max="100" step="0.1" data-profile-setting="allocationPercent"></label>
             <label class="field" data-show="allocation"><span>Allocation base</span>
-              <select data-setting="allocationBase"><option value="initial">Initial fund</option><option value="equity">Current equity</option></select>
+              <select data-profile-setting="allocationBase"><option value="initial">Initial fund</option><option value="equity">Current equity</option></select>
             </label>
-            <label class="field" data-show="fixedMargin"><span>Margin per trade ($)</span><input type="number" min="0.1" step="1" data-setting="fixedMargin"></label>
-            <label class="field" data-show="fixedQty"><span>Quantity per trade</span><input type="number" min="0" step="any" data-setting="fixedQty"></label>
+            <label class="field" data-show="fixedMargin"><span>Margin per trade ($)</span><input type="number" min="0.1" step="1" data-profile-setting="fixedMargin"></label>
+            <label class="field" data-show="fixedQty"><span>Quantity per trade</span><input type="number" min="0" step="any" data-profile-setting="fixedQty"></label>
           </div>
           <p class="note" id="sizingNote"></p>
         </section>
 
         <section class="setting-group">
-          <div class="group-head"><h3>Exit plan</h3><span class="hint">SL / TP in ROE (% of margin) unless changed</span></div>
+          <div class="group-head"><h3>Profile exit plan</h3><span class="hint">SL / TP in ROE (% of margin)</span></div>
           <div class="field-grid">
+            <label class="field"><span>Stop loss %</span><input type="number" min="0.01" step="0.05" data-profile-setting="slPercent"></label>
+            <label class="field"><span>TP1 %</span><input type="number" min="0.01" step="0.05" data-profile-setting="tp1Percent"></label>
+            <label class="field"><span>TP1 close %</span><input type="number" min="1" max="100" step="1" data-profile-setting="tp1ClosePercent"></label>
+            <label class="field"><span>Max TP %</span><input type="number" min="0.01" step="1" data-profile-setting="tpMaxPercent"></label>
+            <label class="field"><span>Trailing distance %</span><input type="number" min="0.01" step="0.05" data-profile-setting="trailingDistancePercent"></label>
+          </div>
+          <div class="toggle-line">
+            <label class="switch-row"><span class="switch"><input type="checkbox" data-profile-setting="trailingEnabled"><i></i></span><span>Trailing stop</span></label>
+            <label class="field inline"><span>Trail starts</span><select data-profile-setting="trailingStart"><option value="tp1">After TP1</option><option value="immediate">Immediately</option></select></label>
+          </div>
+        </section>
+
+        <section class="setting-group">
+          <div class="group-head"><h3>Signal — open interest</h3><span class="hint">All enabled filters must pass</span></div>
+          <div class="filter-head"><span>Use</span><span>Timeframe</span><span>Op</span><span>Threshold</span><span class="right">Market max</span></div>
+          <div id="oiFilters" class="filter-list"></div>
+        </section>
+
+        <section class="setting-group">
+          <div class="group-head"><h3>Signal — volume</h3><span class="hint">Percentage change, not USD</span></div>
+          <div class="filter-head"><span>Use</span><span>Timeframe</span><span>Op</span><span>Threshold</span><span class="right">Market max</span></div>
+          <div id="volFilters" class="filter-list"></div>
+        </section>
+
+        <section class="setting-group">
+          <div class="group-head"><h3>Signal — price change</h3><span class="hint">Optional move filter</span></div>
+          <div class="filter-head"><span>Use</span><span>Timeframe</span><span>Op</span><span>Threshold</span><span class="right">Market max</span></div>
+          <div id="priceFilters" class="filter-list"></div>
+        </section>
+
+        <section class="setting-group">
+          <div class="group-head"><h3>Profile limits</h3><span class="hint">Specific caps for this profile</span></div>
+          <div class="field-grid">
+            <label class="field"><span>Max trades (0 = unlimited)</span><input type="number" min="0" step="1" data-profile-setting="maxTrades"></label>
+            <label class="field"><span>Max open positions (0 = no cap)</span><input type="number" min="0" step="1" data-profile-setting="maxOpenPositions"></label>
+            <label class="field"><span>Max positions per coin</span><input type="number" min="1" max="50" step="1" data-profile-setting="maxPositionsPerCoin"></label>
+          </div>
+        </section>
+
+        <div style="margin: 18px 0 10px; padding-top: 14px; border-top: 1px dashed var(--line); font-size: 11px; font-weight: 700; color: var(--dim); text-transform: uppercase; letter-spacing: 0.5px;">
+          Global &amp; shared settings
+        </div>
+
+        <section class="setting-group">
+          <div class="group-head"><h3>Shared capital</h3><span class="hint">Global fund &amp; risk calculation</span></div>
+          <div class="field-grid">
+            <label class="field"><span>Total fund (USDT)</span><input type="number" min="1" step="1" data-setting="totalFund"></label>
             <label class="field"><span>Risk unit</span>
               <select data-setting="riskMode"><option value="roe">ROE — % of margin</option><option value="price">Price — % of coin</option></select>
             </label>
-            <label class="field"><span>Stop loss %</span><input type="number" min="0.01" step="0.05" data-setting="slPercent"></label>
-            <label class="field"><span>TP1 %</span><input type="number" min="0.01" step="0.05" data-setting="tp1Percent"></label>
-            <label class="field"><span>TP1 close %</span><input type="number" min="1" max="100" step="1" data-setting="tp1ClosePercent"></label>
-            <label class="field"><span>Max TP %</span><input type="number" min="0.01" step="1" data-setting="tpMaxPercent"></label>
-            <label class="field"><span>Trailing distance %</span><input type="number" min="0.01" step="0.05" data-setting="trailingDistancePercent"></label>
-          </div>
-          <div class="toggle-line">
-            <label class="switch-row"><span class="switch"><input type="checkbox" data-setting="trailingEnabled"><i></i></span><span>Trailing stop</span></label>
-            <label class="field inline"><span>Trail starts</span><select data-setting="trailingStart"><option value="tp1">After TP1</option><option value="immediate">Immediately</option></select></label>
           </div>
         </section>
 
@@ -126,25 +174,8 @@
         </section>
 
         <section class="setting-group">
-          <div class="group-head"><h3>Signal — open interest</h3><span class="hint">All enabled filters must pass</span></div>
-          <div class="filter-head"><span>Use</span><span>Timeframe</span><span>Op</span><span>Threshold</span><span class="right">Market max</span></div>
-          <div id="oiFilters" class="filter-list"></div>
-        </section>
-
-        <section class="setting-group">
-          <div class="group-head"><h3>Signal — volume</h3><span class="hint">Percentage change, not USD</span></div>
-          <div class="filter-head"><span>Use</span><span>Timeframe</span><span>Op</span><span>Threshold</span><span class="right">Market max</span></div>
-          <div id="volFilters" class="filter-list"></div>
-        </section>
-
-        <section class="setting-group">
-          <div class="group-head"><h3>Direction &amp; universe</h3><span class="hint">Which coins are eligible</span></div>
+          <div class="group-head"><h3>Universe filters</h3><span class="hint">Which coins are eligible</span></div>
           <div class="field-grid">
-            <label class="field"><span>Trade direction</span>
-              <select data-setting="direction"><option value="auto">Auto (from filter operators)</option><option value="long">Long only</option><option value="short">Short only</option></select>
-            </label>
-            <label class="field"><span>Max open positions (0 = no cap)</span><input type="number" min="0" step="1" data-setting="maxOpenPositions"></label>
-            <label class="field"><span>Max positions per coin</span><input type="number" min="1" max="50" step="1" data-setting="maxPositionsPerCoin"></label>
             <label class="field"><span>Minimum OI (USD)</span><input type="number" min="0" step="1000" data-setting="minOiUsd"></label>
             <label class="field"><span>Minimum 24h volume (USD)</span><input type="number" min="0" step="1000" data-setting="minVolUsd24h"></label>
             <label class="field full"><span>Excluded symbols (comma separated)</span><input type="text" data-setting="excludeSymbols" spellcheck="false"></label>
@@ -155,7 +186,6 @@
         <section class="setting-group">
           <div class="group-head"><h3>Execution</h3><span class="hint">Paper fill assumptions &amp; scan loop</span></div>
           <div class="field-grid">
-            <label class="field"><span>Max trades (0 = unlimited)</span><input type="number" min="0" step="1" data-setting="maxTrades"></label>
             <label class="field"><span>Scan interval (sec)</span><input type="number" min="10" max="3600" step="1" data-setting="scanIntervalSec"></label>
             <label class="field"><span>Price refresh (ms)</span><input type="number" min="500" max="60000" step="100" data-setting="priceRefreshMs"></label>
             <label class="field"><span>Taker fee % / side</span><input type="number" min="0" max="2" step="0.01" data-setting="feePercent"></label>
@@ -250,6 +280,12 @@
               <button class="tab" data-tab="near" type="button">Near miss <b id="tabNear">0</b></button>
               <button class="tab" data-tab="all" type="button">All <b id="tabAll">0</b></button>
             </div>
+            <select id="marketSideFilter" class="cg-select" title="Filter by trade side">
+              <option value="all">All sides</option>
+              <option value="long">🟢 Long</option>
+              <option value="short">🔴 Short</option>
+              <option value="conflict">⚠️ Conflict</option>
+            </select>
             <input id="marketSearch" class="search" type="search" placeholder="Search coin…" autocomplete="off">
           </div>
         </div>

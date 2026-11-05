@@ -18,10 +18,13 @@ const VENUE_NAMES = {
 const VENUE_ORDER = ["okx", "mexc", "gate", "kucoin", "binance", "bybit", "bitget"];
 const OI_LABELS = { "5m": "OI 5m", "15m": "OI 15m", "30m": "OI 30m", "1h": "OI 1h", "4h": "OI 4h" };
 const VOL_LABELS = { "1h": "Vol 1h", "4h": "Vol 4h" };
+const PRICE_LABELS = { "5m": "Price 5m", "1h": "Price 1h" };
 const TAB_LABELS = { qualified: "qualified", near: "near-miss", all: "coins" };
 
 const state = {
   settings: null,
+  activeProfile: "long",
+  sideFilter: "all",
   initialFund: 0,
   meta: {},
   stats: {},
@@ -216,9 +219,15 @@ function toast(message, type = "info", sub = "") {
 const SETTINGS_ROOT = $(".settings-panel");
 
 function buildFilterRows(container, list, group) {
+  if (!container) return;
   container.innerHTML = list
     .map((f) => {
-      const label = group === "oi" ? OI_LABELS[f.key] || f.key : VOL_LABELS[f.key] || f.key;
+      const label =
+        group === "oi"
+          ? OI_LABELS[f.key] || f.key
+          : group === "vol"
+          ? VOL_LABELS[f.key] || f.key
+          : PRICE_LABELS[f.key] || `Price ${f.key}`;
       const off = f.enabled && f.threshold !== null && f.threshold !== "" ? "" : "off";
       return `<div class="filter-row ${off}" data-key="${f.key}" data-group="${group}">
         <label class="switch"><input type="checkbox" data-f="enabled" ${f.enabled ? "checked" : ""}><i></i></label>
@@ -257,11 +266,57 @@ function setSettingValue(el, value) {
   else el.value = value;
 }
 
+function collectCurrentProfile() {
+  const side = state.activeProfile || "long";
+  if (!state.settings) state.settings = {};
+  if (!state.settings.profiles) {
+    state.settings.profiles = { long: {}, short: {} };
+  }
+  const prof = { ...(state.settings.profiles[side] || {}) };
+  const enableBox = $("#profileEnabled");
+  if (enableBox) prof.enabled = enableBox.checked;
+  $$("[data-profile-setting]").forEach((el) => {
+    const k = el.dataset.profileSetting;
+    if (el.type === "checkbox") prof[k] = el.checked;
+    else if (el.type === "number") prof[k] = el.value === "" ? null : Number(el.value);
+    else prof[k] = el.value;
+  });
+  prof.oiFilters = collectFilters("#oiFilters", prof.oiFilters);
+  prof.volFilters = collectFilters("#volFilters", prof.volFilters);
+  prof.priceFilters = collectFilters("#priceFilters", prof.priceFilters);
+  state.settings.profiles[side] = prof;
+  return prof;
+}
+
 function renderSettingsForm() {
   if (!state.settings) return;
+  const side = state.activeProfile || "long";
+  if (!state.settings.profiles) {
+    state.settings.profiles = {
+      long: { ...state.settings, enabled: true },
+      short: { ...state.settings, enabled: false },
+    };
+  }
+  const prof = state.settings.profiles[side] || state.settings;
+
+  // Render shared settings
   $$("[data-setting]").forEach((el) => setSettingValue(el, state.settings[el.dataset.setting]));
-  buildFilterRows($("#oiFilters"), state.settings.oiFilters || [], "oi");
-  buildFilterRows($("#volFilters"), state.settings.volFilters || [], "vol");
+
+  // Profile tabs & active profile controls
+  $$("#profileTabs .tab").forEach((b) => b.classList.toggle("active", b.dataset.profile === side));
+  const enabledBox = $("#profileEnabled");
+  if (enabledBox) enabledBox.checked = Boolean(prof.enabled);
+  const enabledLabel = $("#profileEnabledLabel");
+  if (enabledLabel) {
+    enabledLabel.textContent = side === "short" ? "Enable Short Profile" : "Enable Long Profile";
+  }
+
+  // Profile-specific settings
+  $$("[data-profile-setting]").forEach((el) => setSettingValue(el, prof[el.dataset.profileSetting]));
+
+  buildFilterRows($("#oiFilters"), prof.oiFilters || [], "oi");
+  buildFilterRows($("#volFilters"), prof.volFilters || [], "vol");
+  buildFilterRows($("#priceFilters"), prof.priceFilters || [], "price");
   buildVenueToggles();
   updateVisibility();
   updateDerived();
@@ -270,6 +325,8 @@ function renderSettingsForm() {
 }
 
 function collectFilters(selector, previous) {
+  const container = $(selector);
+  if (!container) return previous || [];
   return $$(`${selector} .filter-row`).map((row) => {
     const prev = (previous || []).find((f) => f.key === row.dataset.key) || {};
     const raw = row.querySelector('[data-f="threshold"]').value.trim();
@@ -285,6 +342,7 @@ function collectFilters(selector, previous) {
 }
 
 function collectSettings() {
+  collectCurrentProfile();
   const out = JSON.parse(JSON.stringify(state.settings || {}));
   // Write-only / derived fields are never part of a settings save.
   delete out.coinglassApiKey;
@@ -295,8 +353,6 @@ function collectSettings() {
     else if (el.type === "number") out[key] = el.value === "" ? null : Number(el.value);
     else out[key] = el.value;
   });
-  out.oiFilters = collectFilters("#oiFilters", out.oiFilters);
-  out.volFilters = collectFilters("#volFilters", out.volFilters);
   out.venues = $$(".venue-chip input:checked").map((el) => el.value);
   return out;
 }
@@ -307,23 +363,23 @@ function setDirty(dirty) {
 }
 
 function updateVisibility() {
-  const mode = $('[data-setting="sizingMode"]').value;
+  const mode = $('[data-profile-setting="sizingMode"]')?.value || "allocation";
   $$("[data-show]").forEach((el) => {
     el.classList.toggle("hidden", el.dataset.show !== mode);
   });
 }
 
 function updateDerived() {
-  const lev = Math.max(1, num($('[data-setting="leverage"]').value, 1));
-  const fund = num($('[data-setting="totalFund"]').value, 0);
-  const mode = $('[data-setting="sizingMode"]').value;
-  const allocPct = num($('[data-setting="allocationPercent"]').value, 50);
-  const fixedMargin = num($('[data-setting="fixedMargin"]').value, 0);
-  const fixedQty = num($('[data-setting="fixedQty"]').value, 0);
-  const riskMode = $('[data-setting="riskMode"]').value;
-  const sl = num($('[data-setting="slPercent"]').value, 0);
-  const tp1 = num($('[data-setting="tp1Percent"]').value, 0);
-  const tpMax = num($('[data-setting="tpMaxPercent"]').value, 0);
+  const lev = Math.max(1, num($('[data-profile-setting="leverage"]')?.value, 1));
+  const fund = num($('[data-setting="totalFund"]')?.value, 0);
+  const mode = $('[data-profile-setting="sizingMode"]')?.value || "allocation";
+  const allocPct = num($('[data-profile-setting="allocationPercent"]')?.value, 50);
+  const fixedMargin = num($('[data-profile-setting="fixedMargin"]')?.value, 0);
+  const fixedQty = num($('[data-profile-setting="fixedQty"]')?.value, 0);
+  const riskMode = $('[data-setting="riskMode"]')?.value || "roe";
+  const sl = num($('[data-profile-setting="slPercent"]')?.value, 0);
+  const tp1 = num($('[data-profile-setting="tp1Percent"]')?.value, 0);
+  const tpMax = num($('[data-profile-setting="tpMaxPercent"]')?.value, 0);
 
   let margin = 0;
   if (mode === "allocation") margin = (fund * allocPct) / 100;
@@ -331,12 +387,14 @@ function updateDerived() {
   else margin = (fixedQty * 1) / lev;
 
   const note = $("#sizingNote");
-  if (mode === "fixedQty") {
-    note.textContent = `Each trade buys ${fixedQty || 0} coins. Margin = notional ÷ leverage.`;
-  } else {
-    note.textContent = `Each trade uses ${money(margin)} margin → ${money(margin * lev)} notional at ${lev}x.`;
+  if (note) {
+    if (mode === "fixedQty") {
+      note.textContent = `Each trade buys ${fixedQty || 0} coins. Margin = notional ÷ leverage.`;
+    } else {
+      note.textContent = `Each trade uses ${money(margin)} margin → ${money(margin * lev)} notional at ${lev}x.`;
+    }
+    note.classList.toggle("neg", mode !== "fixedQty" && margin > fund + 0.001);
   }
-  note.classList.toggle("neg", mode !== "fixedQty" && margin > fund + 0.001);
 
   const reenterEl = $("#reenterHint");
   if (reenterEl) {
@@ -356,13 +414,15 @@ function updateDerived() {
     }
   }
 
-  const hint = $('[data-setting="riskMode"]').closest(".setting-group").querySelector(".hint");
-  if (riskMode === "roe") {
-    hint.textContent = `${sl}% ROE stop = ${(sl / lev).toFixed(2)}% price move at ${lev}x`;
-  } else {
-    hint.textContent = `Stop = ${sl}% price move; at ${lev}x that is ${(sl * lev).toFixed(1)}% ROE`;
+  const hint = $('[data-setting="riskMode"]')?.closest(".setting-group")?.querySelector(".hint");
+  if (hint) {
+    if (riskMode === "roe") {
+      hint.textContent = `${sl}% ROE stop = ${(sl / lev).toFixed(2)}% price move at ${lev}x`;
+    } else {
+      hint.textContent = `Stop = ${sl}% price move; at ${lev}x that is ${(sl * lev).toFixed(1)}% ROE`;
+    }
+    if (tpMax && tp1 && tpMax < tp1) hint.textContent += " · TP max < TP1";
   }
-  if (tpMax && tp1 && tpMax < tp1) hint.textContent += " · TP max < TP1";
 }
 
 function markDirty() {
@@ -371,8 +431,8 @@ function markDirty() {
 }
 
 SETTINGS_ROOT.addEventListener("input", (e) => {
-  if (e.target.matches("[data-setting], [data-f]")) {
-    if (e.target.matches('[data-setting="sizingMode"]')) updateVisibility();
+  if (e.target.matches("[data-setting], [data-profile-setting], [data-f], #profileEnabled")) {
+    if (e.target.matches('[data-profile-setting="sizingMode"], [data-setting="sizingMode"]')) updateVisibility();
     if (e.target.matches('[data-f="enabled"]')) {
       const row = e.target.closest(".filter-row");
       row.classList.toggle("off", !e.target.checked);
@@ -381,8 +441,8 @@ SETTINGS_ROOT.addEventListener("input", (e) => {
   }
 });
 SETTINGS_ROOT.addEventListener("change", (e) => {
-  if (e.target.matches("[data-setting], [data-f]")) {
-    if (e.target.matches('[data-setting="sizingMode"]')) updateVisibility();
+  if (e.target.matches("[data-setting], [data-profile-setting], [data-f], #profileEnabled")) {
+    if (e.target.matches('[data-profile-setting="sizingMode"], [data-setting="sizingMode"]')) updateVisibility();
     if (e.target.matches('[data-f="enabled"]')) {
       const row = e.target.closest(".filter-row");
       row.classList.toggle("off", !e.target.checked);
@@ -807,6 +867,13 @@ function renderMarkets() {
   const all = state.markets || [];
   let list =
     state.tab === "qualified" ? qualifiedMarkets() : state.tab === "near" ? nearMarkets() : all;
+  if (state.sideFilter && state.sideFilter !== "all") {
+    if (state.sideFilter === "conflict") {
+      list = list.filter((m) => m.isConflict || m.side === "conflict");
+    } else {
+      list = list.filter((m) => m.side === state.sideFilter && !m.isConflict);
+    }
+  }
   if (state.search) {
     const q = state.search.toLowerCase();
     list = list.filter(
@@ -815,6 +882,7 @@ function renderMarkets() {
   }
   list = [...list].sort((a, b) => {
     if (a.qualified !== b.qualified) return a.qualified ? -1 : 1;
+    if (a.isConflict !== b.isConflict) return a.isConflict ? 1 : -1;
     if (num(a.passCount) !== num(b.passCount)) return num(b.passCount) - num(a.passCount);
     if (num(a.score) !== num(b.score)) return num(b.score) - num(a.score);
     return num(b.oiUsd) - num(a.oiUsd);
@@ -863,6 +931,8 @@ function renderMarkets() {
         let signal = `<span class="pass-pill no">off</span>`;
         if (openCount > 0 && !roomForMore) {
           signal = `<span class="pass-pill ready">OPEN${openCount > 1 ? ` ×${openCount}` : ""}</span>`;
+        } else if (m.isConflict || m.side === "conflict") {
+          signal = `<span class="side-tag conflict" title="Qualified for both Long and Short — skipped">CONFLICT</span>`;
         } else if (m.stale) {
           signal = `<span class="pass-pill no" title="CoinGlass data is stale">STALE</span>`;
         } else if (m.qualified && !m.tradable) {
@@ -875,11 +945,14 @@ function renderMarkets() {
         } else if (m.configured) signal = `<span class="pass-pill no">${m.passCount}/${m.total}</span>`;
         let venue = m.venue ? `<span class="venue-tag">${esc(m.venue)}</span>` : `<span class="subtle">no feed</span>`;
         if (m.excluded) venue = `<span class="subtle">excluded</span>`;
-        const canTrade = m.qualified && roomForMore && m.tradable && !m.excluded && !m.cooling && !m.stale;
+        const canTrade = m.qualified && roomForMore && m.tradable && !m.excluded && !m.cooling && !m.stale && !m.isConflict;
         let blockShort = "";
         let blockText = "";
-        if (m.qualified && !canTrade) {
-          if (m.stale) {
+        if ((m.qualified || m.isConflict) && !canTrade) {
+          if (m.isConflict) {
+            blockShort = "Conflict";
+            blockText = "Coin qualifies for both Long and Short profiles — skipped to avoid conflicting positions.";
+          } else if (m.stale) {
             blockShort = "Stale";
             blockText = "CoinGlass data is more than 2.5 minutes old.";
           } else if (!m.tradable) {
@@ -897,7 +970,7 @@ function renderMarkets() {
           }
         }
         const tradeCell = canTrade
-          ? `<button class="btn small primary row-trade" data-open="${esc(m.symbol)}" type="button">Trade</button>`
+          ? `<button class="btn small primary row-trade" data-open="${esc(m.symbol)}" data-side="${esc(m.side || 'long')}" type="button">Trade</button>`
           : blockShort
             ? `<button class="btn small row-trade" type="button" disabled title="${esc(blockText)}">${esc(blockShort)}</button>`
             : "";
@@ -1750,10 +1823,13 @@ async function control(action, confirmText) {
   }
 }
 
-async function manualOpen(symbol, button) {
+async function manualOpen(symbol, side = null, button = null) {
   if (button) button.disabled = true;
   try {
-    const res = await api("/api/trade/open", { method: "POST", body: { symbol, force: true } });
+    const res = await api("/api/trade/open", {
+      method: "POST",
+      body: { symbol, side, force: true },
+    });
     const p = res.position;
     toast(`Opened ${p.side.toUpperCase()} ${p.symbol}`, "success", `@ ${price(p.entryPrice)} · ${money(p.margin)} margin`);
     await refreshLive();
@@ -1761,7 +1837,7 @@ async function manualOpen(symbol, button) {
   } catch (err) {
     const payload = err.payload || {};
     const map = {
-      "cannot-open": "Not enough free margin, max positions reached, or a position is already open.",
+      "cannot-open": "Not enough free margin, max positions reached, or an opposite position is already open.",
       "already-open": "This coin already has the maximum number of open positions (see Max positions per coin).",
       "coin-not-found": "Coin is not in the current CoinGlass table.",
       "no-price-feed": "No exchange price feed available for this coin.",
@@ -1775,6 +1851,8 @@ async function manualOpen(symbol, button) {
         "coin-cap": "Max positions per coin already open.",
         "max-open": "Max open positions reached.",
         "cooling": "Still in the re-entry delay.",
+        "opposite-position": "One-way mode: cannot open opposite trade on a coin with an active position.",
+        "conflict": "Coin qualifies for both Long and Short profiles.",
         "no-feed": "No exchange price feed for this coin.",
         "stale": "CoinGlass data is stale.",
         "no-size": "Position size rounds to zero — check the sizing settings.",
@@ -1919,11 +1997,24 @@ $("#btnDownloadLogs").addEventListener("click", () => {
 
 $("#marketsBody").addEventListener("click", (e) => {
   const btn = e.target.closest("[data-open]");
-  if (btn) manualOpen(btn.dataset.open, btn);
+  if (btn) manualOpen(btn.dataset.open, btn.dataset.side || null, btn);
 });
 $("#positionsBody").addEventListener("click", (e) => {
   const btn = e.target.closest("[data-close]");
   if (btn) closePosition(btn.dataset.close, btn);
+});
+
+$("#profileTabs")?.addEventListener("click", (e) => {
+  const btn = e.target.closest("[data-profile]");
+  if (!btn || btn.dataset.profile === state.activeProfile) return;
+  collectCurrentProfile();
+  state.activeProfile = btn.dataset.profile;
+  renderSettingsForm();
+});
+
+$("#marketSideFilter")?.addEventListener("change", (e) => {
+  state.sideFilter = e.target.value;
+  renderMarkets();
 });
 
 $("#equityChart").addEventListener("mousemove", chartHover);

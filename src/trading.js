@@ -7,6 +7,7 @@ import { toNum, round } from "./util.js";
 
 export const OI_TIMEFRAMES = ["5m", "15m", "30m", "1h", "4h"];
 export const VOL_TIMEFRAMES = ["1h", "4h"];
+export const PRICE_TIMEFRAMES = ["5m", "1h"];
 
 export const OI_FIELD = {
   "5m": "m5OiChangePercent",
@@ -21,6 +22,11 @@ export const VOL_FIELD = {
   "4h": "h4VolChangePercent",
 };
 
+export const PRICE_FIELD = {
+  "5m": "m5PriceChangePercent",
+  "1h": "h1PriceChangePercent",
+};
+
 export const OI_LABEL = {
   "5m": "OI 5m",
   "15m": "OI 15m",
@@ -32,6 +38,11 @@ export const OI_LABEL = {
 export const VOL_LABEL = {
   "1h": "Volume 1h",
   "4h": "Volume 4h",
+};
+
+export const PRICE_LABEL = {
+  "5m": "Price 5m",
+  "1h": "Price 1h",
 };
 
 export function isNum(v) {
@@ -84,7 +95,7 @@ export function computeLevels({ side, entry, settings }) {
 }
 
 /** One active filter -> one check. Blank thresholds are ignored (not configured). */
-export function buildChecks(coin, settings) {
+export function buildChecks(coin, settings = {}) {
   const checks = [];
   for (const f of settings.oiFilters || []) {
     if (!f.enabled) continue;
@@ -116,27 +127,62 @@ export function buildChecks(coin, settings) {
       pass: compare(value, f.op, threshold),
     });
   }
+  for (const f of settings.priceFilters || []) {
+    if (!f.enabled) continue;
+    const threshold = toNum(f.threshold);
+    if (threshold === null) continue;
+    const value = toNum(
+      coin?.priceChange?.[f.key] ??
+        (f.key === "5m" ? coin?.priceChange5m : f.key === "1h" ? coin?.priceChange1h : null)
+    );
+    checks.push({
+      group: "price",
+      key: f.key,
+      label: PRICE_LABEL[f.key] || `Price ${f.key}`,
+      op: f.op === "<=" ? "<=" : ">=",
+      threshold,
+      value,
+      pass: compare(value, f.op, threshold),
+    });
+  }
   return checks;
 }
 
-export function enabledFilterCount(settings) {
+export function enabledFilterCount(settings = {}) {
   const count = (list) =>
     (list || []).filter((f) => f.enabled && toNum(f.threshold) !== null).length;
-  return count(settings.oiFilters) + count(settings.volFilters);
+  return (
+    count(settings.oiFilters) +
+    count(settings.volFilters) +
+    count(settings.priceFilters)
+  );
 }
 
 /**
- * Evaluate a coin against all enabled filters.
- * Side is derived from the OI filters (falling back to volume filters) unless
- * the user explicitly forces long/short.
+ * Evaluate a coin against all enabled filters for a profile/settings.
+ * Side can be passed explicitly (e.g. "long" | "short") for dual profiles (S1-S3),
+ * or derived from filters/direction for legacy settings.
  */
-export function evaluateCoin(coin, settings) {
+export function evaluateCoin(coin, settings = {}, explicitSide = null) {
+  if (settings.enabled === false) {
+    return {
+      configured: false,
+      qualified: false,
+      side: explicitSide || null,
+      checks: [],
+      passCount: 0,
+      total: 0,
+      missing: 0,
+      needsDirection: false,
+    };
+  }
+
   const checks = buildChecks(coin, settings);
   if (!checks.length) {
     return {
       configured: false,
       qualified: false,
-      side: null,
+      side: explicitSide || null,
       checks,
       passCount: 0,
       total: 0,
@@ -149,12 +195,12 @@ export function evaluateCoin(coin, settings) {
   const directionChecks = oiChecks.length ? oiChecks : checks;
   const ops = new Set(directionChecks.map((c) => c.op));
   const autoSide = ops.size === 1 ? (ops.has("<=") ? "short" : "long") : null;
-  const explicit = settings.direction;
+  const explicit = explicitSide || settings.direction || settings.side;
   const side = explicit === "long" || explicit === "short" ? explicit : autoSide;
 
   const passCount = checks.filter((c) => c.pass).length;
   const missing = checks.filter((c) => c.value === null).length;
-  const qualified = passCount === checks.length && !!side;
+  const qualified = passCount === checks.length && Boolean(side);
 
   return {
     configured: true,
@@ -398,11 +444,18 @@ export function positionAction(pos, price, opts = {}) {
 
   // Activate / advance trailing stop.
   if (pos.trailingEnabled && (pos.trailingStart === "immediate" || pos.tp1Hit)) {
-    const trail =
+    const rawTrail =
       dir > 0 ? next.peakPrice * (1 - pos.trailMove) : next.peakPrice * (1 + pos.trailMove);
     next.trailingActive = true;
-    next.trailStopPrice =
-      dir > 0 ? Math.max(pos.slPrice, trail) : Math.min(pos.slPrice, trail);
+    if (dir > 0) {
+      // Long: trailing stop moves upward only, bounded by slPrice
+      const prevStop = toNum(pos.trailStopPrice, -Infinity);
+      next.trailStopPrice = Math.max(pos.slPrice, prevStop, rawTrail);
+    } else {
+      // Short: trailing stop moves downward only, bounded by slPrice
+      const prevStop = toNum(pos.trailStopPrice, Infinity);
+      next.trailStopPrice = Math.min(pos.slPrice, prevStop, rawTrail);
+    }
   }
 
   const stop = next.trailingActive ? next.trailStopPrice : pos.slPrice;

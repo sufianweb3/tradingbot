@@ -264,12 +264,125 @@ test("short position actions mirror longs", () => {
     tpMaxPrice: 80,
     liqPrice: 101.5,
     peakPrice: 100,
+    trailMove: 0.004,
   });
   assert.equal(positionAction(p, 100.5).reason, "SL");
   assert.equal(positionAction(p, 102).reason, "Liquidation");
+  assert.equal(positionAction(p, 102).force, true);
   const partial = positionAction(p, 98.5);
   assert.equal(partial.type, "partial");
   assert.equal(partial.reason, "TP1");
+});
+
+test("short trailing stop ratchets downward and triggers on upward bounce", () => {
+  const p = position({
+    side: "short",
+    slPrice: 100.4,
+    tp1Price: 99,
+    tpMaxPrice: 80,
+    liqPrice: 101.5,
+    peakPrice: 99,
+    tp1Hit: true,
+    trailingActive: true,
+    trailStopPrice: 99.5,
+    trailMove: 0.005, // 0.5%
+  });
+
+  // Price drops favorably to 90 -> peak becomes 90, trail stop should be 90 * (1 + 0.005) = 90.45
+  const step1 = positionAction(p, 90);
+  assert.equal(step1.type, "none");
+  assert.equal(step1.next.peakPrice, 90);
+  assert.ok(Math.abs(step1.next.trailStopPrice - 90.45) < 1e-9);
+
+  // Price bounces up slightly to 90.2 -> peak stays 90, trail stop must NOT loosen
+  const step2 = positionAction({ ...p, ...step1.next }, 90.2);
+  assert.equal(step2.type, "none");
+  assert.equal(step2.next.peakPrice, 90);
+  assert.ok(Math.abs(step2.next.trailStopPrice - 90.45) < 1e-9);
+
+  // Price rises to 90.5 -> above trail stop 90.45 -> triggers Trailing SL close
+  const step3 = positionAction({ ...p, ...step1.next }, 90.5);
+  assert.equal(step3.type, "close");
+  assert.equal(step3.reason, "Trailing SL");
+  assert.ok(Math.abs(step3.price - 90.45) < 1e-9);
+});
+
+test("short TP max closes the runner when price drops to or below tpMaxPrice", () => {
+  const p = position({
+    side: "short",
+    slPrice: 100.4,
+    tp1Price: 99,
+    tpMaxPrice: 80,
+    tp1Hit: true,
+    trailingActive: false,
+  });
+  const a = positionAction(p, 79.5);
+  assert.equal(a.type, "close");
+  assert.equal(a.reason, "TP max");
+  assert.equal(a.price, 80);
+});
+
+test("short positionMetrics computes inverted PnL and ROE", () => {
+  const pos = position({ side: "short", entryPrice: 100, qty: 2, margin: 4, feePercent: 0.1 });
+  // Price drops to 90: gross gain is (100 - 90) * 2 = +20
+  const win = positionMetrics(pos, 90);
+  assert.ok(Math.abs(win.gross - 20) < 1e-9);
+  assert.ok(Math.abs(win.exitFee - 0.18) < 1e-9); // 90 * 2 * 0.1%
+  assert.ok(Math.abs(win.net - 19.82) < 1e-9);
+  assert.ok(Math.abs(win.grossRoe - 500) < 1e-9); // 20 / 4 margin * 100 = 500%
+
+  // Price rises to 105: gross loss is (100 - 105) * 2 = -10
+  const loss = positionMetrics(pos, 105);
+  assert.ok(Math.abs(loss.gross - (-10)) < 1e-9);
+  assert.ok(Math.abs(loss.grossRoe - (-250)) < 1e-9);
+});
+
+test("dual profiles evaluate independently and price filters work", () => {
+  const s = normalizeSettings({
+    profiles: {
+      long: {
+        enabled: true,
+        oiFilters: [{ key: "5m", enabled: true, op: ">=", threshold: 5 }],
+        priceFilters: [{ key: "1h", enabled: true, op: ">=", threshold: 2 }],
+      },
+      short: {
+        enabled: true,
+        oiFilters: [{ key: "5m", enabled: true, op: "<=", threshold: -5 }],
+        priceFilters: [{ key: "1h", enabled: true, op: "<=", threshold: -2 }],
+      },
+    },
+  });
+
+  const bullishCoin = { oi: { "5m": 6 }, vol: {}, priceChange1h: 3 };
+  const longEv = evaluateCoin(bullishCoin, s.profiles.long, "long");
+  const shortEv = evaluateCoin(bullishCoin, s.profiles.short, "short");
+  assert.equal(longEv.qualified, true);
+  assert.equal(longEv.side, "long");
+  assert.equal(shortEv.qualified, false);
+
+  const bearishCoin = { oi: { "5m": -8 }, vol: {}, priceChange1h: -4 };
+  const bLong = evaluateCoin(bearishCoin, s.profiles.long, "long");
+  const bShort = evaluateCoin(bearishCoin, s.profiles.short, "short");
+  assert.equal(bLong.qualified, false);
+  assert.equal(bShort.qualified, true);
+  assert.equal(bShort.side, "short");
+});
+
+test("legacy settings migrate to profiles.long with profiles.short disabled", () => {
+  const legacy = {
+    totalFund: 1000,
+    leverage: 25,
+    slPercent: 15,
+    tp1Percent: 40,
+    oiFilters: [{ key: "15m", enabled: true, op: ">=", threshold: 3 }],
+  };
+  const normalized = normalizeSettings(legacy);
+  assert.equal(normalized.profiles.long.enabled, true);
+  assert.equal(normalized.profiles.long.leverage, 25);
+  assert.equal(normalized.profiles.long.slPercent, 15);
+  assert.equal(normalized.profiles.long.tp1Percent, 40);
+  assert.equal(normalized.profiles.short.enabled, false);
+  assert.equal(normalized.leverage, 25); // Top-level mirror works
 });
 
 test("computeStats aggregates wins, losses, profit factor and streaks", () => {

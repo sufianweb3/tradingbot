@@ -245,7 +245,10 @@ export async function handleRpcRequest({ path, method = "GET", body = {}, query 
       if (cgClient && cgClient.status.stopNewEntries) {
         return { status: 400, data: { ok: false, error: "coinglass-feed-offline" } };
       }
-      const result = await engine.openManual(body?.symbol, { force: body?.force !== false });
+      const result = await engine.openManual(body?.symbol, {
+        force: body?.force !== false,
+        side: body?.side || null,
+      });
       await store.flush();
       return {
         status: result.ok ? 200 : 400,

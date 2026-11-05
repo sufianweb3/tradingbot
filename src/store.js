@@ -16,72 +16,100 @@ if (typeof process !== "undefined" && process?.versions?.node) {
   }
 }
 import { DEFAULT_VENUES } from "./exchanges.js";
-import { OI_TIMEFRAMES, VOL_TIMEFRAMES } from "./trading.js";
+import { OI_TIMEFRAMES, VOL_TIMEFRAMES, PRICE_TIMEFRAMES } from "./trading.js";
 import { clamp, deepMerge, now, toNum } from "./util.js";
 
-function filterDefaults(timeframes, group) {
+function filterDefaults(timeframes, group, defaultOp = ">=") {
   return timeframes.map((key) => ({
     key,
     enabled: false,
-    op: ">=",
+    op: defaultOp,
     threshold: null,
     group,
   }));
 }
 
+export function defaultProfile(side = "long") {
+  const isShort = side === "short";
+  return {
+    enabled: side === "long",
+    // Filters
+    oiFilters: filterDefaults(OI_TIMEFRAMES, "oi", isShort ? "<=" : ">="),
+    volFilters: filterDefaults(VOL_TIMEFRAMES, "vol", ">="),
+    priceFilters: filterDefaults(PRICE_TIMEFRAMES, "price", isShort ? "<=" : ">="),
+    // Sizing
+    sizingMode: "allocation", // allocation | fixedMargin | fixedQty
+    allocationPercent: 50,
+    allocationBase: "initial", // initial | equity
+    fixedMargin: 250,
+    fixedQty: 1,
+    leverage: 50,
+    // Exit plan
+    slPercent: 20,
+    tp1Percent: 50,
+    tp1ClosePercent: 50,
+    tpMaxPercent: 1000,
+    trailingEnabled: true,
+    trailingStart: "tp1", // tp1 | immediate
+    trailingDistancePercent: 20,
+    // Caps
+    maxTrades: 0,
+    maxOpenPositions: 0,
+    maxPositionsPerCoin: 1,
+  };
+}
+
 export const DEFAULT_SETTINGS = {
-  // Capital and sizing
+  // Capital and sizing (global / shared)
   totalFund: 500,
-  sizingMode: "allocation", // allocation | fixedMargin | fixedQty
+  sizingMode: "allocation",
   allocationPercent: 50,
-  allocationBase: "initial", // initial | equity
+  allocationBase: "initial",
   fixedMargin: 250,
   fixedQty: 1,
   leverage: 50,
 
-  // Exit plan (percentages are ROE by default: % of the margin)
+  // Exit plan (shared defaults)
   riskMode: "roe", // roe | price
   slPercent: 20,
   tp1Percent: 50,
   tp1ClosePercent: 50,
   tpMaxPercent: 1000,
   trailingEnabled: true,
-  trailingStart: "tp1", // tp1 | immediate
+  trailingStart: "tp1",
   trailingDistancePercent: 20,
 
-  // Signal
-  direction: "auto", // auto | long | short
+  // Legacy signal fields (kept for migration & backwards compatibility)
+  direction: "auto",
   oiFilters: filterDefaults(OI_TIMEFRAMES, "oi"),
   volFilters: filterDefaults(VOL_TIMEFRAMES, "vol"),
+  priceFilters: filterDefaults(PRICE_TIMEFRAMES, "price"),
   minOiUsd: 0,
   minVolUsd24h: 0,
   excludeSymbols:
     "USDT,USDC,USDE,DAI,FDUSD,TUSD,USDP,PYUSD,BUSD,USDD,USTC,WBTC,WETH",
-  // Off by default: the universe is coins with a real exchange feed.
   allowCoinglassPrice: false,
-  // Optional official API key. Empty = scrape the public website (default).
   coinglassApiKey: "",
 
-  // Execution / paper engine
-  maxTrades: 0, // 0 = unlimited
-  maxOpenPositions: 0, // 0 = limited only by available balance
-  // How many positions may be open on the same coin at once. 1 = the classic
-  // "one trade per coin" rule; raise it to stack into a strong move.
+  // Execution
+  maxTrades: 0,
+  maxOpenPositions: 0,
   maxPositionsPerCoin: 1,
   scanIntervalSec: 30,
   priceRefreshMs: 3000,
-  // Re-entry on the same coin after a position closes. When enabled, the coin
-  // is blocked for `reenterDelayMin` minutes from the close. When disabled it
-  // may trade again at the next scan as soon as the filters pass.
   reenterEnabled: false,
   reenterDelayMin: 30,
-  // Derived from the two settings above (seconds). Kept because the engine and
-  // older clients use it as the single effective cooldown value.
   cooldownSec: 0,
   feePercent: 0.05,
   slippagePercent: 0.02,
   venues: [...DEFAULT_VENUES],
   autoStart: false,
+
+  // Dual profiles (PRD 5.4 M2)
+  profiles: {
+    long: defaultProfile("long"),
+    short: defaultProfile("short"),
+  },
 };
 
 const RANGES = {
@@ -108,6 +136,21 @@ const RANGES = {
   minVolUsd24h: [0, 1e12],
 };
 
+const PROFILE_RANGES = {
+  allocationPercent: [0.1, 100],
+  fixedMargin: [0.1, 1e9],
+  fixedQty: [1e-8, 1e12],
+  leverage: [1, 200],
+  slPercent: [0.01, 100000],
+  tp1Percent: [0.01, 100000],
+  tp1ClosePercent: [1, 100],
+  tpMaxPercent: [0.01, 1000000],
+  trailingDistancePercent: [0.01, 100000],
+  maxTrades: [0, 1e7],
+  maxOpenPositions: [0, 1000],
+  maxPositionsPerCoin: [1, 50],
+};
+
 function normalizeFilterList(input, defaults, allowedKeys) {
   const byKey = new Map();
   for (const f of Array.isArray(input) ? input : []) {
@@ -124,6 +167,50 @@ function normalizeFilterList(input, defaults, allowedKeys) {
       group: d.group,
     };
   });
+}
+
+export function normalizeProfile(input = {}, side = "long") {
+  const def = defaultProfile(side);
+  const p = deepMerge(def, input && typeof input === "object" ? input : {});
+
+  p.enabled = Boolean(p.enabled);
+  for (const [key, [min, max]] of Object.entries(PROFILE_RANGES)) {
+    const n = toNum(p[key]);
+    p[key] = clamp(n === null ? def[key] : n, min, max);
+  }
+  p.fixedMargin = Math.round(p.fixedMargin * 100) / 100;
+  p.leverage = Math.round(p.leverage);
+  p.maxPositionsPerCoin = Math.max(1, Math.round(p.maxPositionsPerCoin));
+  p.slPercent = Math.round(p.slPercent * 100) / 100;
+  p.tp1Percent = Math.round(p.tp1Percent * 100) / 100;
+  p.tp1ClosePercent = Math.round(p.tp1ClosePercent * 100) / 100;
+  p.tpMaxPercent = Math.round(p.tpMaxPercent * 100) / 100;
+  p.trailingDistancePercent = Math.round(p.trailingDistancePercent * 100) / 100;
+
+  p.sizingMode = ["allocation", "fixedMargin", "fixedQty"].includes(p.sizingMode)
+    ? p.sizingMode
+    : "allocation";
+  p.allocationBase = p.allocationBase === "equity" ? "equity" : "initial";
+  p.trailingStart = p.trailingStart === "immediate" ? "immediate" : "tp1";
+  p.trailingEnabled = Boolean(p.trailingEnabled);
+
+  p.oiFilters = normalizeFilterList(
+    p.oiFilters,
+    filterDefaults(OI_TIMEFRAMES, "oi", side === "short" ? "<=" : ">="),
+    OI_TIMEFRAMES
+  );
+  p.volFilters = normalizeFilterList(
+    p.volFilters,
+    filterDefaults(VOL_TIMEFRAMES, "vol", ">="),
+    VOL_TIMEFRAMES
+  );
+  p.priceFilters = normalizeFilterList(
+    p.priceFilters,
+    filterDefaults(PRICE_TIMEFRAMES, "price", side === "short" ? "<=" : ">="),
+    PRICE_TIMEFRAMES
+  );
+
+  return p;
 }
 
 export function normalizeSettings(input = {}) {
@@ -179,12 +266,82 @@ export function normalizeSettings(input = {}) {
     .trim()
     .slice(0, 200);
 
-  s.oiFilters = normalizeFilterList(s.oiFilters, filterDefaults(OI_TIMEFRAMES, "oi"), OI_TIMEFRAMES);
-  s.volFilters = normalizeFilterList(
-    s.volFilters,
-    filterDefaults(VOL_TIMEFRAMES, "vol"),
-    VOL_TIMEFRAMES
-  );
+  // S10 Migration: migrate flat settings into profiles.long & profiles.short
+  const profileKeys = [
+    "sizingMode",
+    "allocationPercent",
+    "allocationBase",
+    "fixedMargin",
+    "fixedQty",
+    "leverage",
+    "slPercent",
+    "tp1Percent",
+    "tp1ClosePercent",
+    "tpMaxPercent",
+    "trailingEnabled",
+    "trailingStart",
+    "trailingDistancePercent",
+    "maxTrades",
+    "maxOpenPositions",
+    "maxPositionsPerCoin",
+    "oiFilters",
+    "volFilters",
+    "priceFilters",
+  ];
+
+  const hasProfiles = Boolean(inputObj.profiles && typeof inputObj.profiles === "object");
+  const rawLongObj = (hasProfiles ? inputObj.profiles.long : null) || {};
+  const rawShortObj = (hasProfiles ? inputObj.profiles.short : null) || {};
+
+  const rawLong = { ...rawLongObj };
+  for (const k of profileKeys) {
+    if (Object.prototype.hasOwnProperty.call(inputObj, k)) {
+      // If top-level was explicitly provided (e.g. overrides, legacy settings, updateSettings)
+      rawLong[k] = inputObj[k];
+    } else if (!Object.prototype.hasOwnProperty.call(rawLong, k)) {
+      rawLong[k] = s[k];
+    }
+  }
+
+  const rawShort = { ...rawShortObj };
+  for (const k of profileKeys) {
+    if (!Object.prototype.hasOwnProperty.call(rawShort, k)) {
+      rawShort[k] = rawShortObj[k] ?? s[k];
+    }
+  }
+
+  if (rawLong.enabled === undefined) {
+    rawLong.enabled = inputObj.direction !== "short";
+  }
+  if (rawShort.enabled === undefined) {
+    rawShort.enabled = inputObj.direction === "short";
+  }
+
+  s.profiles = {
+    long: normalizeProfile(rawLong, "long"),
+    short: normalizeProfile(rawShort, "short"),
+  };
+
+  // Sync profiles.long to top-level for backward compatibility with legacy code/tests
+  s.sizingMode = s.profiles.long.sizingMode;
+  s.allocationPercent = s.profiles.long.allocationPercent;
+  s.allocationBase = s.profiles.long.allocationBase;
+  s.fixedMargin = s.profiles.long.fixedMargin;
+  s.fixedQty = s.profiles.long.fixedQty;
+  s.leverage = s.profiles.long.leverage;
+  s.slPercent = s.profiles.long.slPercent;
+  s.tp1Percent = s.profiles.long.tp1Percent;
+  s.tp1ClosePercent = s.profiles.long.tp1ClosePercent;
+  s.tpMaxPercent = s.profiles.long.tpMaxPercent;
+  s.trailingEnabled = s.profiles.long.trailingEnabled;
+  s.trailingStart = s.profiles.long.trailingStart;
+  s.trailingDistancePercent = s.profiles.long.trailingDistancePercent;
+  s.maxTrades = s.profiles.long.maxTrades;
+  s.maxOpenPositions = s.profiles.long.maxOpenPositions;
+  s.maxPositionsPerCoin = s.profiles.long.maxPositionsPerCoin;
+  s.oiFilters = s.profiles.long.oiFilters;
+  s.volFilters = s.profiles.long.volFilters;
+  s.priceFilters = s.profiles.long.priceFilters;
 
   const venues = Array.isArray(s.venues) ? s.venues : [];
   s.venues = [...new Set(venues.filter((v) => DEFAULT_VENUES.includes(v)))];

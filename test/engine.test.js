@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Engine integration tests. No network: the exchange hub is stubbed so we can
  * drive fills, partial exits and trailing stops deterministically.
  */
@@ -476,6 +476,144 @@ test("price loop schedules nothing while flat and starts when a position opens",
     assert.equal(scheduled.length, 0, "an idle bot must not wake the engine");
     open(engine, "BTC");
     assert.ok(scheduled.length >= 1, "opening a position starts the price loop");
+  } finally {
+    engine.destroy();
+  }
+});
+
+test("dual scan: a coin qualifying for both long and short is skipped as conflict (PRD S5)", async () => {
+  const engine = makeEngine({
+    profiles: {
+      long: {
+        enabled: true,
+        oiFilters: [{ key: "5m", enabled: true, op: ">=", threshold: 5 }],
+      },
+      short: {
+        enabled: true,
+        oiFilters: [{ key: "5m", enabled: true, op: "<=", threshold: 10 }],
+      },
+    },
+  });
+  try {
+    engine.state.meta.running = true;
+    // BTC has OI 5m = 7, passing BOTH >= 5 (long) AND <= 10 (short) -> conflict!
+    const conflictCoin = {
+      symbol: "BTC",
+      name: "Bitcoin",
+      price: 100,
+      oi: { "5m": 7 },
+      vol: { "1h": 10 },
+      oiUsd: 1e8,
+      volUsd24h: 1e8,
+    };
+    engine.marketCache = {
+      at: Date.now(),
+      coins: [conflictCoin],
+      total: 1,
+      pages: 1,
+      error: null,
+    };
+
+    const rows = engine.getMarketRows();
+    const btcRow = rows.find((r) => r.symbol === "BTC");
+    assert.ok(btcRow);
+    assert.equal(btcRow.isConflict, true);
+    assert.equal(btcRow.side, "conflict");
+    assert.equal(btcRow.qualified, false);
+    assert.equal(btcRow.blockReason, "conflict");
+
+    const res = await engine.scan();
+    assert.equal(res.opened, 0, "conflict coin must not be opened");
+    assert.equal(engine.state.positions.length, 0);
+  } finally {
+    engine.destroy();
+  }
+});
+
+test("one-way mode forbids opening an opposite position on the same coin (PRD S6)", () => {
+  const engine = makeEngine({
+    profiles: {
+      long: { enabled: true, maxPositionsPerCoin: 3 },
+      short: { enabled: true, maxPositionsPerCoin: 3 },
+    },
+  });
+  try {
+    // Open a LONG position on BTC
+    const longPos = engine._openPosition(
+      coin("BTC"),
+      { venue: "stub", venueName: "Stub", venueSymbol: "BTC", base: "BTC", price: 100, ts: Date.now() },
+      { side: "long", checks: [] }
+    );
+    assert.ok(longPos);
+    assert.equal(engine.state.positions.length, 1);
+
+    // Attempting to open a SHORT on BTC must be blocked by one-way position mode
+    const shortPos = engine._openPosition(
+      coin("BTC"),
+      { venue: "stub", venueName: "Stub", venueSymbol: "BTC", base: "BTC", price: 100, ts: Date.now() },
+      { side: "short", checks: [] }
+    );
+    assert.equal(shortPos, null, "opposite short position must be blocked on BTC");
+    assert.equal(engine._canOpenMore("BTC", "short"), false);
+    // But another LONG is allowed up to maxPositionsPerCoin
+    assert.equal(engine._canOpenMore("BTC", "long"), true);
+  } finally {
+    engine.destroy();
+  }
+});
+
+test("short trade execution: opens, takes TP1 partially, and closes on trailing stop", async () => {
+  const engine = makeEngine({
+    allocationPercent: 50,
+    leverage: 50,
+    profiles: {
+      short: {
+        enabled: true,
+        leverage: 50,
+        slPercent: 20,
+        tp1Percent: 50, // 50% ROE at 50x = 1% price move down -> 99.0
+        tp1ClosePercent: 50,
+        trailingEnabled: true,
+        trailingStart: "tp1",
+        trailingDistancePercent: 20, // 20% ROE at 50x = 0.4% distance
+      },
+    },
+  });
+  try {
+    // Open a SHORT on ETH @ 100
+    const shortPos = engine._openPosition(
+      coin("ETH"),
+      { venue: "stub", venueName: "Stub", venueSymbol: "ETH", base: "ETH", price: 100, ts: Date.now() },
+      { side: "short", checks: [] }
+    );
+    assert.ok(shortPos);
+    assert.equal(shortPos.side, "short");
+    assert.equal(shortPos.slPrice, 100.4); // SL above entry
+    assert.equal(shortPos.tp1Price, 99);   // TP1 below entry
+
+    // Price drops to 99 -> triggers TP1 partial exit
+    engine.hub.quote = async () => ({ price: 99, ts: Date.now(), venue: "stub", venueName: "Stub", base: "ETH" });
+    await engine._tickPrices();
+    assert.equal(shortPos.tp1Hit, true);
+    assert.equal(shortPos.partials.length, 1);
+    assert.equal(shortPos.partials[0].reason, "TP1");
+
+    // Price drops further to 95 -> trailing stop tightens to 95 * 1.004 = 95.38
+    engine.hub.quote = async () => ({ price: 95, ts: Date.now(), venue: "stub", venueName: "Stub", base: "ETH" });
+    await engine._tickPrices();
+    assert.equal(shortPos.trailingActive, true);
+    assert.ok(Math.abs(shortPos.trailStopPrice - 95.38) < 1e-6);
+
+    // Price bounces up to 96 -> above trailing stop 95.38 -> closes on Trailing SL
+    engine.hub.quote = async () => ({ price: 96, ts: Date.now(), venue: "stub", venueName: "Stub", base: "ETH" });
+    await engine._tickPrices();
+
+    assert.equal(engine.state.positions.length, 0, "position closed");
+    assert.equal(engine.state.trades.length, 1, "trade recorded");
+    const trade = engine.state.trades[0];
+    assert.equal(trade.side, "short");
+    assert.equal(trade.profile, "short");
+    assert.ok(trade.pnlNet > 0, "net PnL is positive on winning short trade");
   } finally {
     engine.destroy();
   }
