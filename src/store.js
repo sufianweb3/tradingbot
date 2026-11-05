@@ -105,6 +105,17 @@ export const DEFAULT_SETTINGS = {
   venues: [...DEFAULT_VENUES],
   autoStart: false,
 
+  // Mode and Live Execution (PRD 5.5, 6.4 M3)
+  mode: "paper",
+  live: {
+    exchange: "bybit",
+    marginPerTrade: 0,
+    maxMarginInUsePct: 0,
+    maxOpenPositions: 0,
+    dailyLossCap: 0,
+    clampLeverage: true,
+  },
+
   // Dual profiles (PRD 5.4 M2)
   profiles: {
     long: defaultProfile("long"),
@@ -352,6 +363,19 @@ export function normalizeSettings(input = {}) {
     .split(/[^A-Z0-9]+/)
     .filter(Boolean)
     .join(",");
+
+  s.mode = s.mode === "live" ? "live" : "paper";
+  const rawLive = s.live && typeof s.live === "object" ? s.live : {};
+  s.live = {
+    exchange: ["binance", "bybit", "gate", "kucoin", "mexc"].includes(rawLive.exchange)
+      ? rawLive.exchange
+      : "bybit",
+    marginPerTrade: Math.max(0, toNum(rawLive.marginPerTrade, 0)),
+    maxMarginInUsePct: Math.max(0, Math.min(100, toNum(rawLive.maxMarginInUsePct, 0))),
+    maxOpenPositions: Math.max(0, Math.min(100, toNum(rawLive.maxOpenPositions, 0))),
+    dailyLossCap: Math.max(0, toNum(rawLive.dailyLossCap, 0)),
+    clampLeverage: rawLive.clampLeverage !== false,
+  };
 
   return s;
 }

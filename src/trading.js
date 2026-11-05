@@ -479,3 +479,24 @@ export function positionAction(pos, price, opts = {}) {
 
   return { type: "none", next };
 }
+
+/**
+ * Apply slippage to an entry or exit price based on position side.
+ */
+export function applySlippage(price, side, kind, slipPercent) {
+  const slip = Math.max(0, toNum(slipPercent, 0)) / 100;
+  const dir = side === "long" ? 1 : -1;
+  const sign = kind === "entry" ? dir : -dir;
+  return price * (1 + sign * slip);
+}
+
+/**
+ * Round a price or level to exchange tickSize.
+ */
+export function roundLevel(price, tickSize) {
+  const p = Number(price);
+  const t = Number(tickSize);
+  if (!(p > 0) || !(t > 0)) return price;
+  const inv = 1 / t;
+  return Math.round(p * inv) / inv;
+}

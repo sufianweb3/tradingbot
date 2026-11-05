@@ -18,6 +18,8 @@ import {
   scoreCandidate,
 } from "./trading.js";
 import { clamp, iso, now, round, shortTime, toNum, uid } from "./util.js";
+import { PaperExecutor } from "./executor/paper.js";
+import { LiveExecutor } from "./executor/live.js";
 
 const MAX_LOG_LINES = 300;
 // Minimum gap between two CoinGlass scrapes. The dashboard polls once a second
@@ -98,6 +100,34 @@ export class Engine {
     this._lastNoMarginLog = 0;
     this._started = false;
     this._destroyed = false;
+
+    // Execution abstraction (PRD 5.5, 5.8 M3)
+    this.paperExecutor = new PaperExecutor(this);
+    this.liveExecutor = new LiveExecutor(this);
+    this.killSwitchActive = false;
+    this._lastReconcileAt = 0;
+  }
+
+  get activeExecutor() {
+    return this.state.settings.mode === "live" ? this.liveExecutor : this.paperExecutor;
+  }
+
+  setLiveAdapter(adapter) {
+    this.liveExecutor.setAdapter(adapter);
+  }
+
+  async setMode(newMode) {
+    const target = newMode === "live" ? "live" : "paper";
+    if (target === "live") {
+      if (!this.liveExecutor.adapter) {
+        return { ok: false, error: "Cannot switch to Live: no exchange connected." };
+      }
+      await this.liveExecutor.init();
+    }
+    this.state.settings.mode = target;
+    this.log("info", `Mode switched to ${target.toUpperCase()}`);
+    this.save();
+    return { ok: true, mode: target };
   }
 
   async init() {
@@ -781,15 +811,18 @@ export class Engine {
     }
   }
 
-  getStats() {
-    const marks = new Map(this.state.positions.map((p) => [p.id, toNum(p.markPrice, p.entryPrice)]));
+  getStats(filterMode = null) {
+    const targetMode = filterMode !== null ? filterMode : (this.state.settings?.mode || "paper");
+    const filteredTrades = this.state.trades.filter((t) => !targetMode || (t.mode || "paper") === targetMode);
+    const filteredPositions = this.state.positions.filter((p) => !targetMode || (p.mode || "paper") === targetMode);
+    const marks = new Map(filteredPositions.map((p) => [p.id, toNum(p.markPrice, p.entryPrice)]));
     return computeStats({
-      trades: this.state.trades,
-      positions: this.state.positions,
+      trades: filteredTrades,
+      positions: filteredPositions,
       marks,
       initialFund: this.state.initialFund,
       equityCurve: this.state.equityCurve,
-      feePercent: this.state.settings.feePercent,
+      feePercent: this.state.settings?.feePercent,
     });
   }
 
@@ -977,7 +1010,7 @@ export class Engine {
         if (!ev.qualified || !ev.side) continue;
         const quote = await this._resolveQuote(coin);
         if (!quote) continue;
-        const pos = this._openPosition(coin, quote, ev, profile);
+        const pos = await this.activeExecutor.openPosition(coin, quote, ev, profile);
         if (pos) {
           opened.push(`${pos.side.toUpperCase()} ${pos.symbol}`);
           result.opened++;
@@ -1092,6 +1125,7 @@ export class Engine {
     const levels = computeLevels({ side, entry: fillPrice, settings: { ...s, ...p } });
     const pos = {
       id: uid("pos_"),
+      mode: this.state.settings?.mode === "live" ? "live" : "paper",
       status: "open",
       symbol: coin.symbol,
       side,
@@ -1242,6 +1276,9 @@ export class Engine {
           p.peakPrice = action.next.peakPrice;
           p.trailingActive = action.next.trailingActive;
           p.trailStopPrice = action.next.trailStopPrice;
+          if (p.mode === "live" && this.liveExecutor?.adapter) {
+            this.liveExecutor.updateTrailingStop(p, q.price);
+          }
         }
 
         if (action.type === "close") {
@@ -1274,6 +1311,17 @@ export class Engine {
         this.save();
       } else {
         this._sampleEquity();
+      }
+
+      // Periodic Live reconcile (PRD 5.8 L7)
+      if (this.state.settings?.mode === "live" && this.liveExecutor?.adapter) {
+        const nowMs = Date.now();
+        if (nowMs - (this._lastReconcileAt || 0) >= 30000) {
+          this._lastReconcileAt = nowMs;
+          this.liveExecutor.reconcile().catch((err) => {
+            console.warn("[engine] Live reconcile failed:", err?.message);
+          });
+        }
       }
     } catch (err) {
       this.log("error", `Price tick error: ${err.message}`);
@@ -1376,6 +1424,7 @@ export class Engine {
 
     const trade = {
       id: pos.id,
+      mode: pos.mode || "paper",
       symbol: pos.symbol,
       side: pos.side,
       profile: pos.profile || pos.side,
@@ -1460,7 +1509,12 @@ export class Engine {
       .quote({ venue: pos.venue, venueSymbol: pos.venueSymbol, base: pos.base })
       .catch(() => null);
     const price = q?.price ?? pos.markPrice ?? pos.entryPrice;
-    const trade = this._closePosition(pos, price, reason);
+    let trade;
+    if (pos.mode === "live" && this.liveExecutor?.adapter) {
+      trade = await this.liveExecutor.closePosition(pos, price, reason);
+    } else {
+      trade = await this.paperExecutor.closePosition(pos, price, reason);
+    }
     return { ok: true, trade };
   }
 
@@ -1509,7 +1563,7 @@ export class Engine {
     if (!force && !activeEv.qualified) return { ok: false, error: "criteria-not-met", evaluation: activeEv };
     const quote = await this._resolveQuote(coin);
     if (!quote) return { ok: false, error: "no-price-feed" };
-    const pos = this._openPosition(coin, quote, { ...activeEv, side: targetSide, qualified: true }, profile);
+    const pos = await this.activeExecutor.openPosition(coin, quote, { ...activeEv, side: targetSide, qualified: true }, profile);
     if (!pos) {
       const reason = this._blockReason(
         { symbol: wanted, side: targetSide, excluded: false, stale: false, tradable: true, cooling: false, price: coin.price },

@@ -21,14 +21,19 @@
       </div>
       <div class="brand-text">
         <h1>OI Sniper</h1>
-        <span>CoinGlass OI + Volume · paper engine</span>
+        <span id="engineSubtitle">CoinGlass OI + Volume · paper engine</span>
       </div>
-      <span class="paper-badge">PAPER</span>
+      <div class="mode-switch-group">
+        <button id="btnModePaper" class="mode-badge active" type="button" title="Switch to Paper trading">PAPER</button>
+        <button id="btnModeLive" class="mode-badge live" type="button" title="Switch to Live trading">LIVE</button>
+      </div>
     </div>
 
     <div class="top-status">
+      <div id="exchangePill" class="status-pill exchange" title="Connected Exchange"><span class="dot"></span><span id="exchangePillText">Exchange: Bybit</span></div>
       <div id="cgPill" class="status-pill connecting" title="Checking CoinGlass connection…"><span class="dot"></span><span id="cgPillText">CoinGlass: connecting…</span></div>
       <div id="statusPill" class="status-pill paused"><span class="dot"></span><span id="statusText">Paused</span></div>
+      <div id="killSwitchPill" class="status-pill kill-switch hidden" title="Kill switch is active!"><span class="dot red"></span><span>KILL SWITCH ON</span></div>
       <div class="scan-meta">
         <span id="scanInfo">Waiting for data…</span>
         <span class="sep">·</span>
@@ -37,8 +42,11 @@
     </div>
 
     <div class="top-actions">
+      <button id="btnExchangeConnect" class="btn ghost" type="button">Connect exchange</button>
       <button id="btnToggle" class="btn primary" type="button"><span id="toggleIcon">▶</span> <span id="toggleText">Start bot</span></button>
       <button id="btnScan" class="btn" type="button">Scan now</button>
+      <button id="btnKillSwitch" class="btn danger-ghost" type="button" title="Stop opening new positions">Kill switch</button>
+      <button id="btnPanic" class="btn danger hidden" type="button" title="Panic: Close all positions & cancel all orders">Panic</button>
       <button id="btnReport" class="btn" type="button">Report</button>
       <a id="btnCsv" class="btn ghost" href="/api/report?format=csv&download=1">CSV</a>
       <button id="btnReset" class="btn danger-ghost" type="button">Reset</button>
@@ -203,6 +211,25 @@
           <label class="switch-row" style="margin-top:10px"><span class="switch"><input type="checkbox" data-setting="autoStart"><i></i></span><span>Auto-start bot on page load</span></label>
         </section>
 
+        <section class="setting-group" id="liveSettingsGroup">
+          <div class="group-head"><h3>Live execution guardrails</h3><span class="hint">Active when in Live mode</span></div>
+          <div class="field-grid">
+            <label class="field"><span>Execution exchange</span>
+              <select data-live-setting="exchange">
+                <option value="bybit">Bybit (V5 Linear)</option>
+                <option value="binance">Binance (USDT-M Futures)</option>
+                <option value="gate" disabled>Gate.io (M4)</option>
+                <option value="kucoin" disabled>KuCoin (M4)</option>
+                <option value="mexc" disabled>MEXC (M5)</option>
+              </select>
+            </label>
+            <label class="field"><span>Max margin per trade (0 = off)</span><input type="number" min="0" step="5" data-live-setting="marginPerTrade"></label>
+            <label class="field"><span>Daily loss cap USDT (0 = off)</span><input type="number" min="0" step="10" data-live-setting="dailyLossCap"></label>
+            <label class="field"><span>Max live open positions (0 = off)</span><input type="number" min="0" max="50" step="1" data-live-setting="maxOpenPositions"></label>
+          </div>
+          <label class="switch-row" style="margin-top:10px"><span class="switch"><input type="checkbox" data-live-setting="clampLeverage" checked><i></i></span><span>Clamp leverage to symbol exchange maximum</span></label>
+        </section>
+
         <section class="setting-group">
           <div class="group-head"><h3>Data &amp; Backup</h3><span class="hint">Export or migrate storage</span></div>
           <div class="foot-row" style="gap:8px; margin-top:8px;">
@@ -347,9 +374,78 @@
   </div>
 
   <footer class="page-foot">
-    <span>OI Sniper is a <strong>paper-trading simulator</strong>. No exchange orders are placed. Markets are risky; this is not financial advice.</span>
+    <span>OI Sniper is a <strong>trading system</strong>. Keys stay in your browser. Markets are risky; this is not financial advice.</span>
     <span id="feedFoot">—</span>
   </footer>
+</div>
+
+<!-- Exchange Connect & Vault Modal -->
+<div id="exchangeModal" class="modal-backdrop hidden">
+  <div class="modal-card">
+    <div class="modal-head">
+      <div>
+        <h2>Exchange Connect &amp; Key Vault</h2>
+        <p class="modal-sub">WebCrypto AES-GCM credential vault · stored safely in your browser · keys never leave Worker memory</p>
+      </div>
+      <button id="btnCloseExchangeModal" class="modal-close" type="button" aria-label="Close">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="wizard-alert warning">
+        <strong>⚠️ Crucial Security Invariant:</strong> Do NOT enable Withdrawal permissions when creating your exchange API key. Keys with withdrawal enabled are automatically rejected for your protection.
+      </div>
+
+      <div class="exchange-grid" id="exchangeGrid">
+        <!-- populated dynamically -->
+      </div>
+
+      <div id="wizardBox" class="wizard-box hidden">
+        <h3 id="wizardTitle" style="font-size:14px; margin:0 0 6px;">Connect Exchange</h3>
+        <p class="modal-sub" id="wizardInstructions"></p>
+        <label><span>API Key</span><input type="text" id="wizardApiKey" placeholder="Paste API Key…" autocomplete="off" spellcheck="false"></label>
+        <label><span>Secret Key</span><input type="password" id="wizardSecret" placeholder="Paste Secret…" autocomplete="off" spellcheck="false"></label>
+        <div id="wizardPassphraseRow" class="hidden">
+          <label><span>Passphrase</span><input type="password" id="wizardPassphrase" placeholder="Passphrase…" autocomplete="off" spellcheck="false"></label>
+        </div>
+        <div id="wizardTestFeedback" class="test-result-box hidden"></div>
+        <div style="display:flex; gap:8px; margin-top:8px;">
+          <button id="btnWizardTest" class="btn ghost" type="button">Test connection</button>
+          <button id="btnWizardSave" class="btn primary" type="button">Save &amp; connect</button>
+          <button id="btnWizardCancel" class="btn ghost" type="button">Cancel</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Live Confirmation Modal -->
+<div id="liveConfirmModal" class="modal-backdrop hidden">
+  <div class="modal-card" style="max-width:460px;">
+    <div class="modal-head">
+      <div>
+        <h2 style="color:#f87171;">⚠️ Switch to LIVE Trading</h2>
+        <p class="modal-sub">Real funds will be risked on your connected exchange.</p>
+      </div>
+      <button id="btnCloseLiveConfirmModal" class="modal-close" type="button" aria-label="Close">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="wizard-alert danger">
+        <strong>Real Money Warning:</strong> Live mode places real orders on your connected exchange account. Slippage, liquidation risks, and network delays apply.
+      </div>
+      <div style="font-size:12px; color:var(--fg); line-height:1.5;">
+        <div><strong>Active Exchange:</strong> <span id="confirmExchangeName">Bybit</span></div>
+        <div><strong>Max Margin per Trade:</strong> <span id="confirmMarginCap">$0 (strategy sizing)</span></div>
+        <div><strong>Daily Loss Cap:</strong> <span id="confirmLossCap">Disabled</span></div>
+      </div>
+      <label style="font-size:12px; font-weight:600; display:flex; flex-direction:column; gap:6px; margin-top:10px;">
+        <span>Type <strong style="color:#ef4444;">I UNDERSTAND</strong> to enable Live mode:</span>
+        <input type="text" id="inputLiveConfirm" placeholder="I UNDERSTAND" autocomplete="off" spellcheck="false" style="padding:8px 10px; background:var(--bg); border:1px solid var(--line); border-radius:6px; color:var(--fg); font-family:monospace;">
+      </label>
+    </div>
+    <div class="modal-foot">
+      <button id="btnCancelLiveConfirm" class="btn ghost" type="button">Cancel</button>
+      <button id="btnActivateLive" class="btn danger" type="button" disabled>Activate LIVE mode</button>
+    </div>
+  </div>
 </div>
 
 <div id="toasts" class="toasts" aria-live="polite"></div>

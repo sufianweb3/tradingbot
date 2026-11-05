@@ -6,6 +6,8 @@
  */
 
 import { Engine } from "../src/engine.js";
+import { getCredentials } from "../src/vault.js";
+import { createVenueAdapter } from "../src/venues/index.js";
 import { CoinGlassWorkerClient } from "./cg-worker.js";
 import { handleRpcRequest } from "./routes.js";
 import { IndexedDbStore } from "./store-idb.js";
@@ -57,6 +59,21 @@ async function boot() {
   try {
     await engine.init();
     console.log("[worker] Engine initialized successfully.");
+
+    // Restore Live exchange adapter if credentials exist in Vault (PRD 5.6, 5.7)
+    const activeVenue = store.state?.settings?.live?.exchange;
+    if (activeVenue) {
+      try {
+        const creds = await getCredentials(activeVenue, { idbStore: store });
+        if (creds && creds.apiKey && creds.secret) {
+          const adapter = createVenueAdapter(activeVenue, { apiKey: creds.apiKey, secret: creds.secret });
+          engine.setLiveAdapter(adapter);
+          console.log(`[worker] Restored live adapter for ${activeVenue}`);
+        }
+      } catch (err) {
+        console.warn("[worker] Live adapter restore warning:", err?.message);
+      }
+    }
   } catch (err) {
     console.error("[worker] Engine init failed:", err);
   }

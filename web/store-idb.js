@@ -38,6 +38,7 @@ export class IndexedDbStore {
     this._timer = null;
     this._dirty = false;
     this._flushChain = Promise.resolve();
+    this._memoryVault = new Map();
   }
 
   static async open({ idbFactory } = {}) {
@@ -280,5 +281,83 @@ export class IndexedDbStore {
 
   async importLegacyState(json) {
     return this.importBackup({ state: json });
+  }
+
+  async getVaultKey(key) {
+    if (!key) return null;
+    if (this._memoryVault.has(key)) return this._memoryVault.get(key);
+    if (!this.db || this.fallbackMode) return null;
+    try {
+      const tx = this.db.transaction("vault", "readonly");
+      const store = tx.objectStore("vault");
+      const res = await promisifyRequest(store.get(key));
+      return res || null;
+    } catch (err) {
+      console.warn("[idb-store] getVaultKey failed:", err?.message);
+      return null;
+    }
+  }
+
+  async putVaultKey(key, data) {
+    if (!key) return false;
+    const record = { ...data, key };
+    this._memoryVault.set(key, record);
+    if (!this.db || this.fallbackMode) return true;
+    try {
+      const tx = this.db.transaction("vault", "readwrite");
+      const store = tx.objectStore("vault");
+      store.put(record);
+      await promisifyTx(tx);
+      return true;
+    } catch (err) {
+      console.warn("[idb-store] putVaultKey failed:", err?.message);
+      return false;
+    }
+  }
+
+  async deleteVaultKey(key) {
+    if (!key) return false;
+    this._memoryVault.delete(key);
+    if (!this.db || this.fallbackMode) return true;
+    try {
+      const tx = this.db.transaction("vault", "readwrite");
+      const store = tx.objectStore("vault");
+      store.delete(key);
+      await promisifyTx(tx);
+      return true;
+    } catch (err) {
+      console.warn("[idb-store] deleteVaultKey failed:", err?.message);
+      return false;
+    }
+  }
+
+  async listVaultKeys() {
+    if (!this.db || this.fallbackMode) {
+      return Array.from(this._memoryVault.values());
+    }
+    try {
+      const tx = this.db.transaction("vault", "readonly");
+      const store = tx.objectStore("vault");
+      const res = await promisifyRequest(store.getAll());
+      return res || [];
+    } catch (err) {
+      console.warn("[idb-store] listVaultKeys failed:", err?.message);
+      return Array.from(this._memoryVault.values());
+    }
+  }
+
+  async clearVault() {
+    this._memoryVault.clear();
+    if (!this.db || this.fallbackMode) return true;
+    try {
+      const tx = this.db.transaction("vault", "readwrite");
+      const store = tx.objectStore("vault");
+      store.clear();
+      await promisifyTx(tx);
+      return true;
+    } catch (err) {
+      console.warn("[idb-store] clearVault failed:", err?.message);
+      return false;
+    }
   }
 }

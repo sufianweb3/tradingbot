@@ -6,6 +6,14 @@
 
 import { renderCsv, renderJson, renderReport } from "../src/report.js";
 import { now } from "../src/util.js";
+import {
+  saveCredentials,
+  getCredentials,
+  removeCredentials,
+  listVaultEntries,
+  maskKey,
+} from "../src/vault.js";
+import { createVenueAdapter, SUPPORTED_VENUES } from "../src/venues/index.js";
 
 export const APP_VERSION = "2.0.0";
 export const ENGINE_GENERATION = `v2-web-${APP_VERSION}`;
@@ -299,6 +307,215 @@ export async function handleRpcRequest({ path, method = "GET", body = {}, query 
         status: 200,
         data: { ok: true, ...res },
       };
+    }
+
+    case "/api/exchange/connect": {
+      if (method !== "POST") return { status: 405, data: { ok: false, error: "method-not-allowed" } };
+      const { venue, apiKey, secret, passphrase } = body || {};
+      if (!venue || !apiKey || !secret) {
+        return { status: 400, data: { ok: false, error: "missing-venue-or-credentials" } };
+      }
+      let adapter;
+      try {
+        adapter = createVenueAdapter(venue, { apiKey, secret });
+      } catch (err) {
+        return { status: 400, data: { ok: false, error: err.message } };
+      }
+
+      const val = await adapter.validateKey({ apiKey, secret, passphrase });
+      if (!val.ok) {
+        return {
+          status: 400,
+          data: {
+            ok: false,
+            canTrade: false,
+            canWithdraw: Boolean(val.canWithdraw),
+            error: val.error || "Key validation failed",
+          },
+        };
+      }
+
+      await saveCredentials(venue, { apiKey, secret, passphrase }, { idbStore: store });
+      engine.setLiveAdapter(adapter);
+      return {
+        status: 200,
+        data: {
+          ok: true,
+          venue: adapter.id,
+          canTrade: true,
+          canWithdraw: false,
+          maskedKey: maskKey(apiKey),
+        },
+      };
+    }
+
+    case "/api/exchange/test": {
+      if (method !== "POST") return { status: 405, data: { ok: false, error: "method-not-allowed" } };
+      const venue = body?.venue || engine.state.settings?.live?.exchange || "bybit";
+      let apiKey = body?.apiKey;
+      let secret = body?.secret;
+      let passphrase = body?.passphrase;
+
+      if (!apiKey || !secret) {
+        const creds = await getCredentials(venue, { idbStore: store });
+        if (!creds) {
+          return { status: 400, data: { ok: false, error: `No stored credentials found for ${venue}` } };
+        }
+        apiKey = creds.apiKey;
+        secret = creds.secret;
+        passphrase = creds.passphrase;
+      }
+
+      let adapter;
+      try {
+        adapter = createVenueAdapter(venue, { apiKey, secret });
+      } catch (err) {
+        return { status: 400, data: { ok: false, error: err.message } };
+      }
+
+      const val = await adapter.validateKey({ apiKey, secret, passphrase });
+      if (!val.ok) {
+        return {
+          status: 400,
+          data: {
+            ok: false,
+            venue,
+            canTrade: false,
+            canWithdraw: Boolean(val.canWithdraw),
+            error: val.error,
+          },
+        };
+      }
+
+      let balance = { availableUsdt: 0, equityUsdt: 0 };
+      try {
+        balance = await adapter.getBalance();
+      } catch (err) {
+        return { status: 400, data: { ok: false, venue, error: `Balance check failed: ${err.message}` } };
+      }
+
+      let instruments = [];
+      try {
+        instruments = await adapter.getInstruments();
+      } catch (err) {
+        console.warn(`[routes] Instruments load warning for ${venue}:`, err?.message);
+      }
+
+      let modeCheck = { oneWay: true, isolated: true };
+      try {
+        modeCheck = await adapter.ensureAccountMode();
+      } catch (err) {
+        console.warn(`[routes] Account mode check warning for ${venue}:`, err?.message);
+      }
+
+      return {
+        status: 200,
+        data: {
+          ok: true,
+          venue,
+          canTrade: true,
+          canWithdraw: false,
+          balance,
+          instrumentsCount: instruments.length,
+          accountMode: modeCheck,
+        },
+      };
+    }
+
+    case "/api/exchange/disconnect": {
+      if (method !== "POST") return { status: 405, data: { ok: false, error: "method-not-allowed" } };
+      const venue = body?.venue;
+      if (!venue) return { status: 400, data: { ok: false, error: "missing-venue" } };
+      await removeCredentials(venue, { idbStore: store });
+      if (engine.state.settings?.live?.exchange === venue && engine.state.settings?.mode === "live") {
+        await engine.setMode("paper");
+      }
+      return { status: 200, data: { ok: true, venue } };
+    }
+
+    case "/api/exchange/status": {
+      const entries = await listVaultEntries({ idbStore: store });
+      const activeVenue = engine.state.settings?.live?.exchange || "bybit";
+      const venuesStatus = SUPPORTED_VENUES.map((v) => {
+        const connectedEntry = entries.find((e) => e.venue === v.id);
+        return {
+          ...v,
+          connected: Boolean(connectedEntry),
+          maskedKey: connectedEntry?.maskedKey || null,
+          updatedAt: connectedEntry?.updatedAt || null,
+          isActive: v.id === activeVenue,
+        };
+      });
+      return {
+        status: 200,
+        data: {
+          ok: true,
+          mode: engine.state.settings?.mode || "paper",
+          activeVenue,
+          venues: venuesStatus,
+        },
+      };
+    }
+
+    case "/api/mode": {
+      if (method !== "POST") return { status: 405, data: { ok: false, error: "method-not-allowed" } };
+      const targetMode = body?.mode === "live" ? "live" : "paper";
+      if (targetMode === "live") {
+        const conf = String(body?.confirmation || "").trim();
+        if (conf !== "I UNDERSTAND" && conf !== "LIVE") {
+          return {
+            status: 400,
+            data: {
+              ok: false,
+              error: "Switching to Live requires typing 'I UNDERSTAND' to confirm real-money risk.",
+            },
+          };
+        }
+        const activeVenue = engine.state.settings?.live?.exchange || "bybit";
+        const creds = await getCredentials(activeVenue, { idbStore: store });
+        if (!creds) {
+          return {
+            status: 400,
+            data: {
+              ok: false,
+              error: `Cannot switch to Live: no credentials found for ${activeVenue}. Connect exchange first.`,
+            },
+          };
+        }
+        const adapter = createVenueAdapter(activeVenue, { apiKey: creds.apiKey, secret: creds.secret });
+        const val = await adapter.validateKey(creds);
+        if (!val.ok) {
+          return {
+            status: 400,
+            data: {
+              ok: false,
+              error: `Connection test failed for ${activeVenue}: ${val.error}`,
+            },
+          };
+        }
+        engine.setLiveAdapter(adapter);
+      }
+      const result = await engine.setMode(targetMode);
+      await store.flush();
+      return {
+        status: result.ok ? 200 : 400,
+        data: result,
+      };
+    }
+
+    case "/api/kill-switch": {
+      if (method !== "POST") return { status: 405, data: { ok: false, error: "method-not-allowed" } };
+      const active = body?.active !== undefined ? Boolean(body.active) : !engine.killSwitchActive;
+      engine.killSwitchActive = active;
+      engine.log(active ? "warn" : "info", `Kill switch ${active ? "ACTIVATED (all new entries stopped)" : "DEACTIVATED"}`);
+      return { status: 200, data: { ok: true, active: engine.killSwitchActive } };
+    }
+
+    case "/api/panic": {
+      if (method !== "POST") return { status: 405, data: { ok: false, error: "method-not-allowed" } };
+      const res = await engine.activeExecutor.panic();
+      await store.flush();
+      return { status: 200, data: { ok: true, ...res } };
     }
 
     default:

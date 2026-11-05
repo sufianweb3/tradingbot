@@ -314,6 +314,10 @@ function renderSettingsForm() {
   // Profile-specific settings
   $$("[data-profile-setting]").forEach((el) => setSettingValue(el, prof[el.dataset.profileSetting]));
 
+  // Live guardrail settings
+  const liveConf = state.settings.live || {};
+  $$("[data-live-setting]").forEach((el) => setSettingValue(el, liveConf[el.dataset.liveSetting]));
+
   buildFilterRows($("#oiFilters"), prof.oiFilters || [], "oi");
   buildFilterRows($("#volFilters"), prof.volFilters || [], "vol");
   buildFilterRows($("#priceFilters"), prof.priceFilters || [], "price");
@@ -352,6 +356,13 @@ function collectSettings() {
     if (el.type === "checkbox") out[key] = el.checked;
     else if (el.type === "number") out[key] = el.value === "" ? null : Number(el.value);
     else out[key] = el.value;
+  });
+  out.live = out.live || {};
+  $$("[data-live-setting]").forEach((el) => {
+    const key = el.dataset.liveSetting;
+    if (el.type === "checkbox") out.live[key] = el.checked;
+    else if (el.type === "number") out.live[key] = el.value === "" ? 0 : Number(el.value);
+    else out.live[key] = el.value;
   });
   out.venues = $$(".venue-chip input:checked").map((el) => el.value);
   return out;
@@ -431,7 +442,7 @@ function markDirty() {
 }
 
 SETTINGS_ROOT.addEventListener("input", (e) => {
-  if (e.target.matches("[data-setting], [data-profile-setting], [data-f], #profileEnabled")) {
+  if (e.target.matches("[data-setting], [data-live-setting], [data-profile-setting], [data-f], #profileEnabled")) {
     if (e.target.matches('[data-profile-setting="sizingMode"], [data-setting="sizingMode"]')) updateVisibility();
     if (e.target.matches('[data-f="enabled"]')) {
       const row = e.target.closest(".filter-row");
@@ -441,7 +452,7 @@ SETTINGS_ROOT.addEventListener("input", (e) => {
   }
 });
 SETTINGS_ROOT.addEventListener("change", (e) => {
-  if (e.target.matches("[data-setting], [data-profile-setting], [data-f], #profileEnabled")) {
+  if (e.target.matches("[data-setting], [data-live-setting], [data-profile-setting], [data-f], #profileEnabled")) {
     if (e.target.matches('[data-profile-setting="sizingMode"], [data-setting="sizingMode"]')) updateVisibility();
     if (e.target.matches('[data-f="enabled"]')) {
       const row = e.target.closest(".filter-row");
@@ -1301,6 +1312,7 @@ function applyBootstrap(data) {
 }
 
 function renderAll() {
+  renderModeState();
   renderStatus();
   renderConnection();
   renderKpis();
@@ -2138,6 +2150,312 @@ function setupBackupUi() {
   }
 }
 
+function renderModeState() {
+  const isLive = state.settings?.mode === "live";
+  const paperBtn = $("#btnModePaper");
+  const liveBtn = $("#btnModeLive");
+  if (paperBtn) paperBtn.classList.toggle("active", !isLive);
+  if (liveBtn) liveBtn.classList.toggle("active", isLive);
+
+  const subtitle = $("#engineSubtitle");
+  if (subtitle) {
+    subtitle.textContent = isLive
+      ? "CoinGlass OI + Volume · LIVE ENGINE"
+      : "CoinGlass OI + Volume · paper engine";
+  }
+
+  const panicBtn = $("#btnPanic");
+  if (panicBtn) panicBtn.classList.toggle("hidden", !isLive);
+
+  const exchangePill = $("#exchangePill");
+  if (exchangePill) {
+    const activeEx = (state.settings?.live?.exchange || "bybit").toUpperCase();
+    $("#exchangePillText").textContent = `Exchange: ${activeEx}`;
+  }
+
+  const killPill = $("#killSwitchPill");
+  if (killPill) {
+    killPill.classList.toggle("hidden", !state.killSwitchActive);
+  }
+}
+
+function setupExchangeUi() {
+  const btnModePaper = $("#btnModePaper");
+  const btnModeLive = $("#btnModeLive");
+  const liveConfirmModal = $("#liveConfirmModal");
+  const exchangeModal = $("#exchangeModal");
+  const btnExchangeConnect = $("#btnExchangeConnect");
+  const exchangePill = $("#exchangePill");
+  const btnCloseExchangeModal = $("#btnCloseExchangeModal");
+  const btnCloseLiveConfirmModal = $("#btnCloseLiveConfirmModal");
+  const btnCancelLiveConfirm = $("#btnCancelLiveConfirm");
+  const btnActivateLive = $("#btnActivateLive");
+  const inputLiveConfirm = $("#inputLiveConfirm");
+  const btnKillSwitch = $("#btnKillSwitch");
+  const btnPanic = $("#btnPanic");
+
+  // Mode Switch
+  if (btnModePaper) {
+    btnModePaper.onclick = async () => {
+      if (state.settings?.mode === "paper") return;
+      try {
+        const res = await api("/api/mode", { method: "POST", body: { mode: "paper" } });
+        if (res.ok) {
+          state.settings.mode = "paper";
+          toast("Switched to Paper mode", "success", "Trading simulated without exchange orders.");
+          renderModeState();
+        }
+      } catch (err) {
+        toast("Mode switch failed", "error", err.message);
+      }
+    };
+  }
+
+  if (btnModeLive) {
+    btnModeLive.onclick = () => {
+      if (state.settings?.mode === "live") return;
+      const activeEx = (state.settings?.live?.exchange || "bybit").toUpperCase();
+      $("#confirmExchangeName").textContent = activeEx;
+      const marginCap = state.settings?.live?.marginPerTrade || 0;
+      $("#confirmMarginCap").textContent = marginCap > 0 ? `$${marginCap}` : "Strategy sizing (no cap)";
+      const lossCap = state.settings?.live?.dailyLossCap || 0;
+      $("#confirmLossCap").textContent = lossCap > 0 ? `$${lossCap} USDT` : "Disabled";
+      if (inputLiveConfirm) inputLiveConfirm.value = "";
+      if (btnActivateLive) btnActivateLive.disabled = true;
+      if (liveConfirmModal) liveConfirmModal.classList.remove("hidden");
+    };
+  }
+
+  if (inputLiveConfirm && btnActivateLive) {
+    inputLiveConfirm.oninput = () => {
+      btnActivateLive.disabled = inputLiveConfirm.value.trim() !== "I UNDERSTAND";
+    };
+  }
+
+  if (btnActivateLive) {
+    btnActivateLive.onclick = async () => {
+      try {
+        const res = await api("/api/mode", {
+          method: "POST",
+          body: { mode: "live", confirmation: "I UNDERSTAND" },
+        });
+        if (res.ok) {
+          state.settings.mode = "live";
+          toast("LIVE MODE ACTIVATED!", "error", "Real exchange orders enabled. Trade safely.");
+          if (liveConfirmModal) liveConfirmModal.classList.add("hidden");
+          renderModeState();
+        }
+      } catch (err) {
+        toast("Cannot switch to Live", "error", err.message);
+      }
+    };
+  }
+
+  const closeLiveModal = () => liveConfirmModal?.classList.add("hidden");
+  if (btnCloseLiveConfirmModal) btnCloseLiveConfirmModal.onclick = closeLiveModal;
+  if (btnCancelLiveConfirm) btnCancelLiveConfirm.onclick = closeLiveModal;
+
+  // Kill Switch & Panic
+  if (btnKillSwitch) {
+    btnKillSwitch.onclick = async () => {
+      try {
+        const res = await api("/api/kill-switch", { method: "POST" });
+        state.killSwitchActive = res.active;
+        toast(
+          res.active ? "Kill switch ACTIVATED" : "Kill switch DEACTIVATED",
+          res.active ? "error" : "success",
+          res.active ? "All new position entries are stopped." : "Trading entries resumed."
+        );
+        renderModeState();
+      } catch (err) {
+        toast("Kill switch failed", "error", err.message);
+      }
+    };
+  }
+
+  if (btnPanic) {
+    btnPanic.onclick = async () => {
+      if (!confirm("PANIC: Close all positions and cancel all open orders immediately on the exchange?")) return;
+      try {
+        await api("/api/panic", { method: "POST" });
+        toast("PANIC EXECUTED", "error", "Closed all positions and cancelled orders.");
+        await refreshLive();
+      } catch (err) {
+        toast("Panic failed", "error", err.message);
+      }
+    };
+  }
+
+  // Exchange Connect Modal
+  let selectedVenue = "bybit";
+  const openExchangeModal = async () => {
+    if (exchangeModal) exchangeModal.classList.remove("hidden");
+    $("#wizardBox")?.classList.add("hidden");
+    await renderExchangeCards();
+  };
+
+  if (btnExchangeConnect) btnExchangeConnect.onclick = openExchangeModal;
+  if (exchangePill) exchangePill.onclick = openExchangeModal;
+  if (btnCloseExchangeModal) btnCloseExchangeModal.onclick = () => exchangeModal?.classList.add("hidden");
+
+  async function renderExchangeCards() {
+    const grid = $("#exchangeGrid");
+    if (!grid) return;
+    grid.innerHTML = "<div class='modal-sub'>Loading exchange status…</div>";
+
+    try {
+      const res = await api("/api/exchange/status");
+      const venues = res.venues || [];
+      grid.innerHTML = "";
+
+      for (const v of venues) {
+        const card = document.createElement("div");
+        card.className = `exchange-card ${v.isActive ? "active" : ""}`;
+
+        let statusClass = "not-connected";
+        let statusText = "Not connected";
+        if (v.connected) {
+          statusClass = "connected";
+          statusText = "Connected";
+        } else if (!v.liveSupported) {
+          statusClass = "unavailable";
+          statusText = v.tier.toUpperCase();
+        }
+
+        let actionBtn = "";
+        if (v.connected) {
+          actionBtn = `<button class="btn small danger-ghost btn-disconnect" data-venue="${v.id}" type="button">Disconnect</button>`;
+        } else if (v.liveSupported) {
+          actionBtn = `<button class="btn small primary btn-connect" data-venue="${v.id}" type="button">Connect</button>`;
+        } else {
+          actionBtn = `<span class="modal-sub" style="font-size:11px;">Coming soon</span>`;
+        }
+
+        card.innerHTML = `
+          <div class="exchange-card-head">
+            <span class="exchange-title">${v.name}</span>
+            <span class="exchange-status-pill ${statusClass}">${statusText}</span>
+          </div>
+          <div class="exchange-meta">
+            ${v.connected ? `Key: <code>${v.maskedKey}</code>` : (v.liveSupported ? "USDT-M / Linear Futures" : "Adapter in development")}
+          </div>
+          <div style="display:flex; justify-content:flex-end;">
+            ${actionBtn}
+          </div>
+        `;
+
+        grid.appendChild(card);
+      }
+
+      $$(".btn-connect").forEach((btn) => {
+        btn.onclick = () => openWizard(btn.dataset.venue);
+      });
+      $$(".btn-disconnect").forEach((btn) => {
+        btn.onclick = async () => {
+          if (!confirm(`Disconnect ${btn.dataset.venue.toUpperCase()} and remove saved keys?`)) return;
+          try {
+            await api("/api/exchange/disconnect", { method: "POST", body: { venue: btn.dataset.venue } });
+            toast("Disconnected", "success", `Removed credentials for ${btn.dataset.venue}.`);
+            await renderExchangeCards();
+            renderModeState();
+          } catch (err) {
+            toast("Disconnect failed", "error", err.message);
+          }
+        };
+      });
+    } catch (err) {
+      grid.innerHTML = `<div class="wizard-alert danger">Failed to load exchange status: ${err.message}</div>`;
+    }
+  }
+
+  function openWizard(venueId) {
+    selectedVenue = venueId;
+    const wizard = $("#wizardBox");
+    if (!wizard) return;
+    wizard.classList.remove("hidden");
+
+    $("#wizardApiKey").value = "";
+    $("#wizardSecret").value = "";
+    $("#wizardTestFeedback").classList.add("hidden");
+    $("#wizardPassphraseRow").classList.add("hidden");
+
+    if (venueId === "binance") {
+      $("#wizardTitle").textContent = "Connect Binance USDT-M Futures";
+      $("#wizardInstructions").textContent = "Create an API Key on Binance with 'Enable Futures' checked. DO NOT check 'Enable Withdrawals'.";
+    } else if (venueId === "bybit") {
+      $("#wizardTitle").textContent = "Connect Bybit V5 Linear";
+      $("#wizardInstructions").textContent = "Create an API Key on Bybit with Contract 'Orders & Positions' checked. Leave Withdrawals UNCHECKED.";
+    }
+  }
+
+  const wizardCancelBtn = $("#btnWizardCancel");
+  if (wizardCancelBtn) wizardCancelBtn.onclick = () => $("#wizardBox")?.classList.add("hidden");
+
+  const wizardTestBtn = $("#btnWizardTest");
+  if (wizardTestBtn) {
+    wizardTestBtn.onclick = async () => {
+      const apiKey = $("#wizardApiKey").value.trim();
+      const secret = $("#wizardSecret").value.trim();
+      const passphrase = $("#wizardPassphrase")?.value.trim() || undefined;
+      const feedback = $("#wizardTestFeedback");
+      if (!apiKey || !secret) {
+        toast("Missing fields", "error", "Please provide API Key and Secret.");
+        return;
+      }
+
+      feedback.classList.remove("hidden");
+      feedback.innerHTML = "<span class='modal-sub'>Connecting to exchange & verifying permissions…</span>";
+
+      try {
+        const res = await api("/api/exchange/test", {
+          method: "POST",
+          body: { venue: selectedVenue, apiKey, secret, passphrase },
+        });
+
+        feedback.innerHTML = `
+          <div style="color:#3ddc97; font-weight:600;">✓ Verification Passed</div>
+          <div>• Trading permissions: <strong>Enabled</strong></div>
+          <div>• Withdrawal permissions: <strong>Disabled (Safe)</strong></div>
+          <div>• Available Balance: <strong>$${num(res.balance?.availableUsdt).toFixed(2)} USDT</strong></div>
+          <div>• Tradable contracts: <strong>${res.instrumentsCount || 0}</strong></div>
+        `;
+      } catch (err) {
+        feedback.innerHTML = `
+          <div style="color:#f87171; font-weight:600;">✕ Connection Test Failed</div>
+          <div style="margin-top:2px; color:var(--fg);">${err.message}</div>
+        `;
+      }
+    };
+  }
+
+  const wizardSaveBtn = $("#btnWizardSave");
+  if (wizardSaveBtn) {
+    wizardSaveBtn.onclick = async () => {
+      const apiKey = $("#wizardApiKey").value.trim();
+      const secret = $("#wizardSecret").value.trim();
+      const passphrase = $("#wizardPassphrase")?.value.trim() || undefined;
+      if (!apiKey || !secret) {
+        toast("Missing fields", "error", "Please provide API Key and Secret.");
+        return;
+      }
+
+      try {
+        const res = await api("/api/exchange/connect", {
+          method: "POST",
+          body: { venue: selectedVenue, apiKey, secret, passphrase },
+        });
+
+        toast(`Connected to ${selectedVenue.toUpperCase()}`, "success", `Keys encrypted in WebCrypto vault (${res.maskedKey}).`);
+        $("#wizardBox")?.classList.add("hidden");
+        await renderExchangeCards();
+        renderModeState();
+      } catch (err) {
+        toast("Connection failed", "error", err.message);
+      }
+    };
+  }
+}
+
 // Live tick and status subscriptions
 onLiveTick((tick) => {
   if (tick.coinglassStale) {
@@ -2173,6 +2491,7 @@ onStatusChange((status) => {
 initApi().then(() => {
   loadBootstrap().then(() => {
     setupBackupUi();
+    setupExchangeUi();
     setInterval(tickClock, 1000);
     loop(refreshDashboard, 4000);
     loop(refreshTrades, 30000);
