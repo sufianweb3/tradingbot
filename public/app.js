@@ -1,6 +1,7 @@
 /* OI Sniper dashboard — vanilla JS, no build step. */
 
 import { fetchCoinMarkets, fetchTopMarkets, mergeTopRows } from "/cg-browser.js";
+import { initApi, api as localApi, takeOverEngine, onLiveTick, onStatusChange, isLeaderTab, APP_VERSION } from "/web/api.js";
 
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => [...document.querySelectorAll(sel)];
@@ -151,52 +152,43 @@ const ago = (ms) => {
   return `${h}h ${m % 60}m ago`;
 };
 
+let activeNotice = null;
+
+function setNotice(notice) {
+  activeNotice = notice;
+  renderServerNotice();
+}
+
 async function api(path, { method = "GET", body } = {}) {
-  const res = await fetch(path, {
-    method,
-    headers: body ? { "content-type": "application/json" } : undefined,
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  const text = await res.text();
-  let json = {};
-  try {
-    json = text ? JSON.parse(text) : {};
-  } catch {
-    /* not JSON (e.g. a Cloudflare error page) */
-  }
-  if (!res.ok || json.ok === false) {
-    const err = new Error(json.error || (res.status === 500 ? "server-error" : `HTTP ${res.status}`));
-    err.payload = json;
-    err.status = res.status;
-    err.raw = text;
-    throw err;
-  }
-  return json;
+  return localApi(path, { method, body });
 }
 
 function noteServerError(err) {
-  if (err?.status !== 500) return;
-  state.serverPausedUntil = Date.now() + 60000;
-  if (!state.quotaNotice) {
-    state.quotaNotice = true;
-    toast(
-      "Bot server unavailable",
-      "error",
-      "The Cloudflare engine returned an error (free-tier request quota?). Pausing requests for 60s."
-    );
-  }
-  renderServerNotice();
+  setNotice({ kind: "error", message: `Engine request failed: ${err.message || "runtime error"}` });
 }
 
 function renderServerNotice() {
   const el = $("#serverNotice");
   if (!el) return;
-  const paused = state.serverPausedUntil > Date.now();
-  el.classList.toggle("hidden", !paused);
-  if (paused) {
-    const secs = Math.max(1, Math.ceil((state.serverPausedUntil - Date.now()) / 1000));
-    el.textContent = `Bot server unavailable — retrying in ${secs}s. Open positions are managed by the server, not this tab.`;
+  if (!activeNotice) {
+    el.classList.add("hidden");
+    el.innerHTML = "";
+    return;
   }
+  el.classList.remove("hidden");
+  if (activeNotice.kind === "secondary") {
+    el.innerHTML = `<span style="display:inline-flex; align-items:center; gap:10px;">${esc(activeNotice.message)} <button id="btnTakeOverNotice" class="btn" style="padding:2px 8px; font-size:12px; cursor:pointer;">Take Over Engine</button></span>`;
+    const btn = $("#btnTakeOverNotice");
+    if (btn) {
+      btn.onclick = async () => {
+        btn.disabled = true;
+        btn.textContent = "Taking over...";
+        await takeOverEngine();
+      };
+    }
+    return;
+  }
+  el.innerHTML = `<span>${esc(activeNotice.message)}</span>`;
 }
 
 function clearServerError() {
@@ -1993,19 +1985,111 @@ function deviceLoop(fn, ms) {
   };
 }
 
-loadBootstrap().then(() => {
-  setInterval(tickClock, 1000);
-  // One combined request every 4s: live state + market table. Local device-feed
-  // rows still update every 120ms, so this only lags server-side flags. Polling
-  // /api/live and /api/markets separately would blow the DO free-tier budget.
-  loop(refreshDashboard, 4000);
-  loop(refreshTrades, 30000);
-  startDeviceFeed();
-  document.addEventListener("visibilitychange", () => {
-    if (document.hidden) return;
-    refreshDashboard();
-    deviceFastTick();
-    renderServerNotice();
+function setupBackupUi() {
+  const btnExport = $("#btnExportBackup");
+  if (btnExport) {
+    btnExport.onclick = async () => {
+      try {
+        const res = await api("/api/backup/export");
+        const blob = new Blob([JSON.stringify(res.backup, null, 2)], { type: "application/json" });
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = res.filename || "oi-sniper-backup.json";
+        a.click();
+        URL.revokeObjectURL(a.href);
+        toast("Backup exported", "success", "All settings, trades, and history saved.");
+      } catch (err) {
+        toast("Export failed", "error", err.message);
+      }
+    };
+  }
+
+  const btnImport = $("#btnImportBackup");
+  const fileInput = $("#fileBackupInput");
+  if (btnImport && fileInput) {
+    btnImport.onclick = () => fileInput.click();
+    fileInput.onchange = async () => {
+      const file = fileInput.files?.[0];
+      if (!file) return;
+      try {
+        const text = await file.text();
+        const json = JSON.parse(text);
+        const res = await api("/api/backup/import", { method: "POST", body: json });
+        toast("Backup imported", "success", `Restored ${res.trades || 0} trades.`);
+        await loadBootstrap();
+      } catch (err) {
+        toast("Import failed", "error", err.message);
+      } finally {
+        fileInput.value = "";
+      }
+    };
+  }
+
+  const btnImportLegacy = $("#btnImportLegacy");
+  const fileLegacyInput = $("#fileLegacyInput");
+  if (btnImportLegacy && fileLegacyInput) {
+    btnImportLegacy.onclick = () => fileLegacyInput.click();
+    fileLegacyInput.onchange = async () => {
+      const file = fileLegacyInput.files?.[0];
+      if (!file) return;
+      try {
+        const text = await file.text();
+        const json = JSON.parse(text);
+        const res = await api("/api/backup/legacy", { method: "POST", body: json });
+        toast("Legacy state imported", "success", "Migrated legacy state to IndexedDB.");
+        await loadBootstrap();
+      } catch (err) {
+        toast("Legacy import failed", "error", err.message);
+      } finally {
+        fileLegacyInput.value = "";
+      }
+    };
+  }
+}
+
+// Live tick and status subscriptions
+onLiveTick((tick) => {
+  if (tick.coinglassStale) {
+    setNotice({ kind: "stale", message: "CoinGlass data is older than 20s. New entries paused." });
+  } else if (tick.stopNewEntries) {
+    setNotice({ kind: "offline", message: "CoinGlass feed offline. Stop-new-entries safety gate active." });
+  } else if (isLeaderTab()) {
+    if (activeNotice?.kind === "stale" || activeNotice?.kind === "offline") {
+      setNotice(null);
+    }
+  }
+
+  if (!isLeaderTab()) {
+    if (tick.stats) state.stats = tick.stats;
+    if (tick.positions) state.positions = tick.positions;
+    if (tick.meta) state.meta = tick.meta;
+    renderKpis();
+    renderPositions();
+  }
+});
+
+onStatusChange((status) => {
+  if (status.kind === "secondary") {
+    setNotice(status);
+  } else if (status.kind === "leader") {
+    if (activeNotice?.kind === "secondary") setNotice(null);
+    toast("Leader active", "success", "This tab is managing the trading engine.");
+  } else if (["throttled", "unsupported-browser", "update-required", "kill-switch", "worker-error"].includes(status.kind)) {
+    setNotice(status);
+  }
+});
+
+initApi().then(() => {
+  loadBootstrap().then(() => {
+    setupBackupUi();
+    setInterval(tickClock, 1000);
+    loop(refreshDashboard, 4000);
+    loop(refreshTrades, 30000);
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) return;
+      refreshDashboard();
+      renderServerNotice();
+    });
   });
 });
 tickClock();

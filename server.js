@@ -78,37 +78,72 @@ function stamp() {
   return new Date().toISOString().replace(/[:.]/g, "-").replace("T", "_").slice(0, 19);
 }
 
+const DIST_DIR = path.join(__dirname, "dist");
+
+function resolveStaticPath(rel) {
+  // Check dist first
+  const inDist = path.resolve(DIST_DIR, rel);
+  if (inDist.startsWith(DIST_DIR + path.sep) && fs.existsSync(inDist) && fs.statSync(inDist).isFile()) {
+    return inDist;
+  }
+  // Check web/
+  if (rel.startsWith("web/")) {
+    const inWeb = path.resolve(__dirname, rel);
+    if (inWeb.startsWith(path.join(__dirname, "web") + path.sep) && fs.existsSync(inWeb) && fs.statSync(inWeb).isFile()) {
+      return inWeb;
+    }
+  }
+  // Check src/
+  if (rel.startsWith("src/")) {
+    const inSrc = path.resolve(__dirname, rel);
+    if (inSrc.startsWith(path.join(__dirname, "src") + path.sep) && fs.existsSync(inSrc) && fs.statSync(inSrc).isFile()) {
+      return inSrc;
+    }
+  }
+  // Check public/
+  const inPublic = path.resolve(PUBLIC_DIR, rel);
+  if (inPublic.startsWith(PUBLIC_DIR + path.sep) && fs.existsSync(inPublic) && fs.statSync(inPublic).isFile()) {
+    return inPublic;
+  }
+  return null;
+}
+
 async function serveStatic(req, res, pathname) {
   let rel = pathname === "/" ? "index.html" : pathname.replace(/^\/+/, "");
   rel = decodeURIComponent(rel).replace(/\\/g, "/");
-  const full = path.resolve(PUBLIC_DIR, rel);
-  if (!full.startsWith(PUBLIC_DIR + path.sep) && full !== PUBLIC_DIR) {
-    return sendText(res, 403, "Forbidden");
-  }
-  try {
-    const stat = fs.statSync(full);
-    if (!stat.isFile()) throw new Error("not a file");
+
+  const full = resolveStaticPath(rel);
+  if (full) {
     const ext = path.extname(full).toLowerCase();
+    const isStatus = rel === "status.json";
     res.writeHead(200, {
       "content-type": MIME[ext] || "application/octet-stream",
-      "cache-control": "no-cache",
+      "cache-control": isStatus ? "no-store, no-cache, must-revalidate, max-age=0" : "no-cache, must-revalidate",
       "x-content-type-options": "nosniff",
+      "content-security-policy": "default-src 'self'; script-src 'self'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; connect-src 'self' https://capi.coinglass.com https://open-api-v4.coinglass.com https://contract.mexc.com https://api.gateio.ws https://api-futures.kucoin.com https://fapi.binance.com https://api.bybit.com https://api.bitget.com https://www.okx.com;",
     });
     fs.createReadStream(full).pipe(res);
-  } catch {
-    // SPA fallback
-    const index = path.join(PUBLIC_DIR, "index.html");
-    if (fs.existsSync(index)) {
-      res.writeHead(200, { "content-type": MIME[".html"], "cache-control": "no-cache" });
-      fs.createReadStream(index).pipe(res);
-    } else {
-      sendText(res, 404, "Not found. Run `npm start` from the project directory.");
-    }
+    return;
+  }
+
+  // SPA fallback
+  const index = resolveStaticPath("index.html") || path.join(PUBLIC_DIR, "index.html");
+  if (fs.existsSync(index)) {
+    res.writeHead(200, {
+      "content-type": MIME[".html"],
+      "cache-control": "no-cache",
+      "content-security-policy": "default-src 'self'; script-src 'self'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; connect-src 'self' https://capi.coinglass.com https://open-api-v4.coinglass.com https://contract.mexc.com https://api.gateio.ws https://api-futures.kucoin.com https://fapi.binance.com https://api.bybit.com https://api.bitget.com https://www.okx.com;",
+    });
+    fs.createReadStream(index).pipe(res);
+  } else {
+    sendText(res, 404, "Not found.");
   }
 }
 
 const engine = new Engine({ dataDir: DATA_DIR });
-await engine.init();
+engine.init().catch((err) => {
+  console.error("[engine] init error:", err.message);
+});
 
 // Passive AI dataset logger. It only listens to engine events and reads
 // state; removing this block leaves the bot and its trading logic identical.

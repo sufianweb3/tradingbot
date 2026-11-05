@@ -170,7 +170,20 @@
             <div id="venueToggles" class="venue-toggles"></div>
             <p class="note">The bot picks the venue with the deepest 24h volume for each coin and falls back to another if a feed fails.</p>
           </div>
-          <label class="switch-row" style="margin-top:10px"><span class="switch"><input type="checkbox" data-setting="autoStart"><i></i></span><span>Auto-start bot when the server starts</span></label>
+          <label class="switch-row" style="margin-top:10px"><span class="switch"><input type="checkbox" data-setting="autoStart"><i></i></span><span>Auto-start bot on page load</span></label>
+        </section>
+
+        <section class="setting-group">
+          <div class="group-head"><h3>Data &amp; Backup</h3><span class="hint">Export or migrate storage</span></div>
+          <div class="foot-row" style="gap:8px; margin-top:8px;">
+            <button id="btnExportBackup" class="btn ghost block" type="button">Export backup</button>
+            <button id="btnImportBackup" class="btn ghost block" type="button">Import backup</button>
+            <input type="file" id="fileBackupInput" accept=".json" style="display:none">
+          </div>
+          <div style="margin-top:8px;">
+            <button id="btnImportLegacy" class="btn ghost block" type="button">Import legacy state.json</button>
+            <input type="file" id="fileLegacyInput" accept=".json" style="display:none">
+          </div>
         </section>
 
       </div>
