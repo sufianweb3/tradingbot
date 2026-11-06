@@ -280,7 +280,12 @@ test("device feed overrides scraping and is normalised", () => {
 });
 
 test("stacking: maxPositionsPerCoin allows more than one trade per coin", () => {
-  const engine = makeEngine({ allocationPercent: 20, maxPositionsPerCoin: 1 });
+  const engine = makeEngine({
+    allocationPercent: 20,
+    maxPositionsPerCoin: 1,
+    reenterEnabled: false,
+    reenterDelayMin: 0,
+  });
   try {
     assert.ok(open(engine, "BTC"));
     assert.equal(open(engine, "BTC"), null, "default rule keeps one position per coin");
@@ -327,18 +332,20 @@ test("re-entry: cooldownSec still blocks a fast re-entry when configured", () =>
   }
 });
 
-test("legacy state: the old 300s cooldown migrates to immediate re-entry", () => {
+test("legacy state: the old 300s cooldown migrates to the 12h default once", () => {
   const legacy = require_store({
     settings: { totalFund: 500, cooldownSec: 300 },
     initialFund: 500,
   });
-  assert.equal(legacy.settings.cooldownSec, 0);
-  assert.equal(legacy.settings.maxPositionsPerCoin, 1);
+  assert.equal(legacy.settings.reenterEnabled, true);
+  assert.equal(legacy.settings.reenterDelayMin, 720);
+  assert.equal(legacy.settings.cooldownSec, 43200);
 
-  // A state written after the upgrade keeps an explicit cooldown.
+  // A state written by the new build keeps an explicit legacy cooldown.
   const current = require_store({
     settings: { totalFund: 500, cooldownSec: 300, maxPositionsPerCoin: 2 },
     initialFund: 500,
+    meta: { reentryDefaultsVersion: 1 },
   });
   assert.equal(current.settings.cooldownSec, 300);
   assert.equal(current.settings.maxPositionsPerCoin, 2);
@@ -441,21 +448,44 @@ test("re-entry delay survives a server restart", () => {
   }
 });
 
-test("turning the re-entry switch off removes the delay immediately", () => {
-  const engine = makeEngine({ allocationPercent: 20, reenterDelayMin: 30 });
+test("default same-coin lock blocks for 12h and can be turned off", () => {
+  const engine = makeEngine({ allocationPercent: 20 });
   try {
+    assert.equal(engine.state.settings.reenterEnabled, true);
+    assert.equal(engine.state.settings.reenterDelayMin, 720);
+
     const pos = open(engine, "BTC");
     engine._closePosition(pos, 100, "test close");
-    assert.equal(engine._isCooling("BTC"), false, "off by default");
+    assert.equal(engine._isCooling("BTC"), true, "12h lock is on by default");
+    assert.ok(engine._coolingRemainingSec("BTC") > 43190);
+    assert.equal(engine._isCooling("ETH"), false, "other coins are unaffected");
 
-    engine.updateSettings({ reenterEnabled: true });
-    assert.equal(engine.state.settings.cooldownSec, 1800);
-    assert.equal(engine._isCooling("BTC"), true, "past close time counts once enabled");
+    engine.marketCache = {
+      at: Date.now(),
+      coins: [coin("BTC")],
+      total: 1,
+      pages: 1,
+      error: null,
+    };
+    const row = engine.getMarketRows().find((r) => r.symbol === "BTC");
+    assert.equal(row.cooling, true);
+    assert.ok(row.coolingRemainingSec > 43190);
 
     engine.updateSettings({ reenterEnabled: false });
     assert.equal(engine.state.settings.cooldownSec, 0);
     assert.equal(engine._isCooling("BTC"), false);
-    assert.ok(open(engine, "BTC"), "re-entry is allowed again");
+    assert.ok(open(engine, "BTC"), "re-entry is allowed once the lock is off");
+  } finally {
+    engine.destroy();
+  }
+});
+
+test("same-coin lock blocks stacking even when maxPositionsPerCoin is higher", () => {
+  const engine = makeEngine({ allocationPercent: 20, maxPositionsPerCoin: 3 });
+  try {
+    assert.ok(open(engine, "BTC"), "first entry opens");
+    assert.equal(open(engine, "BTC"), null, "the lock blocks a second same-coin entry");
+    assert.equal(engine.state.positions.length, 1);
   } finally {
     engine.destroy();
   }

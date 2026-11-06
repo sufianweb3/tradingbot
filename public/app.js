@@ -741,14 +741,14 @@ function updateDerived() {
     const mins = Math.max(0, num($('[data-setting="reenterDelayMin"]')?.value, 0));
     reenterEl.classList.remove("neg");
     if (!on) {
-      reenterEl.textContent = "Off: coins can re-enter immediately after a close.";
+      reenterEl.textContent = "Off: the same coin can trade again immediately after it closes.";
     } else if (mins <= 0) {
-      reenterEl.textContent = "Delay 0 = immediately after a close.";
+      reenterEl.textContent = "Window 0 = no same-coin lock.";
     } else {
-      reenterEl.textContent = `= no same-coin trade for ${humanDuration(mins * 60)} after a close.`;
+      reenterEl.textContent = `= no same-coin trade for ${humanDuration(mins * 60)} after its latest open/close.`;
       if (mins > 1440) {
         reenterEl.classList.add("neg");
-        reenterEl.textContent += " (very long block)";
+        reenterEl.textContent += " (very long lock)";
       }
     }
   }
@@ -1259,7 +1259,7 @@ function qualifiedMarkets() {
       marketRoomForMore(m)
   );
 }
-/** Coins that pass the filters but are inside the re-entry delay. */
+/** Coins that pass the filters but are inside the same-coin lock window. */
 function coolingMarkets() {
   return (state.markets || []).filter((m) => m.qualified && m.cooling);
 }
@@ -1276,7 +1276,7 @@ function renderMarketTabs() {
   qTab.textContent = actionable;
   if (qTab.parentElement) {
     qTab.parentElement.title = cooling
-      ? `${actionable} tradable now · ${cooling} qualified but cooling down`
+      ? `${actionable} tradable now · ${cooling} locked by the same-coin rule`
       : `${actionable} tradable now`;
   }
   $("#tabNear").textContent = nearMarkets().length;
@@ -1369,10 +1369,10 @@ function renderMarkets() {
     let msg;
     if (state.tab === "qualified") {
       if (cooling.length) {
-        msg = `${cooling.length} coin(s) pass the filters but are waiting for their re-entry delay after a recent trade: ${cooling
+        msg = `${cooling.length} coin(s) pass the filters but are inside the same-coin lock window after a recent trade: ${cooling
           .slice(0, 4)
           .map((m) => `${m.symbol} (${humanDuration(m.coolingRemainingSec)})`)
-          .join(", ")}. Open the "coins" tab to see them, or turn Re-enter trade off in Execution settings.`;
+          .join(", ")}. Open the "coins" tab to see them, or turn Block same-coin re-entry off in Execution settings.`;
       } else {
         msg = state.meta.filtersConfigured
           ? "No coin currently passes every enabled filter. The bot will keep scanning."
@@ -1403,7 +1403,7 @@ function renderMarkets() {
         } else if (m.qualified && !m.tradable) {
           signal = `<span class="pass-pill no" title="No exchange price feed for this coin">NO FEED</span>`;
         } else if (m.cooling) {
-          signal = `<span class="pass-pill no" title="Re-entry delay">RE-ENTRY ${humanDuration(coolLeft)}</span>`;
+          signal = `<span class="pass-pill no" title="Same-coin lock">LOCKED ${humanDuration(coolLeft)}</span>`;
         } else if (m.qualified && m.side) {
           signal = `<span class="side-tag ${esc(m.side)}">${esc(m.side)}</span>`;
           if (openCount > 0) signal += ` <span class="pass-pill ready">${openCount}/${perCoin}</span>`;
@@ -1429,7 +1429,7 @@ function renderMarkets() {
             blockText = "No exchange price feed for this coin.";
           } else if (m.cooling) {
             blockShort = `Delay ${humanDuration(coolLeft)}`;
-            blockText = `Re-entry delay: ${humanDuration(coolLeft)} left. Turn "Re-enter trade" off or lower the delay to trade again immediately.`;
+            blockText = `Same-coin lock: ${humanDuration(coolLeft)} left. Turn "Block same-coin re-entry" off or lower the lock window to trade again sooner.`;
           } else if (!roomForMore) {
             blockShort = `Max ${perCoin}`;
             blockText = `Max positions per coin (${perCoin}) already open.`;
@@ -1466,7 +1466,7 @@ function renderMarkets() {
   $("#marketFoot").textContent = `Showing ${shown.length} of ${list.length} ${TAB_LABELS[state.tab] || "coins"} · ${all.length.toLocaleString()} coins on CoinGlass · ${(state.meta?.marketTotal || all.length).toLocaleString()} loaded`;
   $("#scannerSub").textContent = state.meta?.lastScan
     ? `${state.meta.lastScan.scanned || 0} evaluated · ${qualifiedMarkets().length} tradable now${
-        coolingMarkets().length ? ` · ${coolingMarkets().length} cooling` : ""
+        coolingMarkets().length ? ` · ${coolingMarkets().length} locked` : ""
       } · ${state.meta.lastScan.ms || 0} ms/scan · data ${
         state.meta.marketAgeMs ? Math.round(state.meta.marketAgeMs / 1000) + "s old" : "fresh"
       }`
@@ -2608,7 +2608,7 @@ async function manualOpen(symbol, side = null, button = null) {
       "coin-not-found": "Coin is not in the current CoinGlass table.",
       "no-price-feed": "No exchange price feed available for this coin.",
       "max-open": "Max open positions reached.",
-      "cooling": `Re-entry delay: ${humanDuration(payload.remainingSec)} left. Turn "Re-enter trade" off or lower the delay to re-enter immediately.`,
+      "cooling": `Same-coin lock: ${humanDuration(payload.remainingSec)} left. Turn "Block same-coin re-entry" off or lower the lock window to trade again sooner.`,
     };
     let sub = map[err.message] || err.message;
     if (err.message === "cannot-open" && payload.reason) {
@@ -2616,7 +2616,7 @@ async function manualOpen(symbol, side = null, button = null) {
         "no-margin": `Not enough free margin: needs ${money(payload.requiredMargin || 0)}, ${money(payload.available || 0)} available.`,
         "coin-cap": "Max positions per coin already open.",
         "max-open": "Max open positions reached.",
-        "cooling": "Still in the re-entry delay.",
+        "cooling": "Still inside the same-coin lock window.",
         "opposite-position": "One-way mode: cannot open opposite trade on a coin with an active position.",
         "conflict": "Coin qualifies for both Long and Short profiles.",
         "no-feed": "No exchange price feed for this coin.",

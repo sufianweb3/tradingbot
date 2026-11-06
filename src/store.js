@@ -24,6 +24,11 @@ import { DEFAULT_EXEC_SETTINGS } from "./core/protectionManager.js";
 import { DEFAULT_ROUTE_SETTINGS } from "./core/router/index.js";
 import { DEFAULT_SPEED_SETTINGS } from "./core/speed.js";
 import { DEFAULT_RISK_SETTINGS } from "./core/riskGuards.js";
+import {
+  DEFAULT_REENTRY_WINDOW_MIN,
+  positionActivityAt,
+  tradeActivityAt,
+} from "./core/reentryGuard.js";
 
 function filterDefaults(timeframes, group, defaultOp = ">=") {
   return timeframes.map((key) => ({
@@ -103,9 +108,12 @@ export const DEFAULT_SETTINGS = {
   maxPositionsPerCoin: 1,
   scanIntervalSec: 30,
   priceRefreshMs: 3000,
-  reenterEnabled: false,
-  reenterDelayMin: 30,
-  cooldownSec: 0,
+  // Same-coin lock: after a coin is opened or closed it cannot be traded
+  // again until this window has elapsed. On by default for 12 hours; set
+  // reenterEnabled to false (or the window to 0) to allow immediate re-entry.
+  reenterEnabled: true,
+  reenterDelayMin: DEFAULT_REENTRY_WINDOW_MIN,
+  cooldownSec: DEFAULT_REENTRY_WINDOW_MIN * 60,
   feePercent: 0.05,
   slippagePercent: 0.02,
   venues: [...DEFAULT_VENUES],
@@ -468,9 +476,11 @@ export function createInitialState(settingsInput = {}) {
       scanCount: 0,
       totalOpened: 0,
       lastOpenAt: null,
-      // Last close time per coin, used to enforce the re-entry delay across
-      // server restarts. Cleared by a strategy reset.
+      // Last trade activity per coin, used to enforce the same-coin lock
+      // across server restarts. Rebuilt from history and live positions on
+      // load; cleared by a strategy reset.
       reentryBlocks: {},
+      reentryDefaultsVersion: 1,
     },
   };
 }
@@ -479,19 +489,6 @@ export function sanitizeLoadedState(input) {
   const base = createInitialState(input?.settings || {});
   const state = { ...base, ...(input || {}) };
   state.settings = normalizeSettings(input?.settings || {});
-  // Migration: states written before per-coin stacking existed carry the old
-  // 5-minute re-entry cooldown. Treat it as the old default and drop it, so a
-  // coin can trade again as soon as the filters pass. A state that already has
-  // maxPositionsPerCoin keeps whatever re-entry delay the user chose.
-  if (input?.settings && input.settings.maxPositionsPerCoin === undefined) {
-    const hasReenterFields =
-      input.settings.reenterEnabled !== undefined || input.settings.reenterDelayMin !== undefined;
-    if (!hasReenterFields && Number(input.settings.cooldownSec) === 300) {
-      state.settings.reenterEnabled = false;
-      state.settings.reenterDelayMin = DEFAULT_SETTINGS.reenterDelayMin;
-      state.settings.cooldownSec = 0;
-    }
-  }
   state.initialFund = toNum(input?.initialFund);
   if (state.initialFund === null || state.initialFund <= 0) state.initialFund = state.settings.totalFund;
   state.trades = Array.isArray(input?.trades)
@@ -510,22 +507,47 @@ export function sanitizeLoadedState(input) {
   if (!state.equityCurve.length) state.equityCurve = base.equityCurve;
   state.logs = Array.isArray(input?.logs) ? input.logs.slice(-250) : [];
   state.meta = { ...base.meta, ...(input?.meta || {}) };
-  // Keep the last close per coin so a restart cannot bypass the delay. Rebuild
-  // it from trade history when an older state has no map.
+
+  // Migration: earlier builds shipped with the same-coin delay off by default
+  // (30 minutes configured but disabled). The lock now defaults to 12 hours.
+  // Adopt that default once for old states; the marker prevents the lock from
+  // being re-enabled after the user explicitly turns it off later.
+  if (!input?.meta?.reentryDefaultsVersion) {
+    const raw = input?.settings && typeof input.settings === "object" ? input.settings : {};
+    const hasReenterFields =
+      Object.prototype.hasOwnProperty.call(raw, "reenterEnabled") ||
+      Object.prototype.hasOwnProperty.call(raw, "reenterDelayMin");
+    const wasOldDefault =
+      raw.reenterEnabled === false && Number(raw.reenterDelayMin ?? 30) === 30;
+    if (!hasReenterFields || wasOldDefault) {
+      state.settings.reenterEnabled = true;
+      state.settings.reenterDelayMin = DEFAULT_REENTRY_WINDOW_MIN;
+      state.settings.cooldownSec = DEFAULT_REENTRY_WINDOW_MIN * 60;
+    }
+    state.meta.reentryDefaultsVersion = 1;
+  }
+
+  // Keep the last activity per coin so a restart cannot bypass the lock. The
+  // authoritative sources are trade history and live positions; the stored map
+  // only covers symbols that are no longer in either list.
   const blocks = {};
   const storedBlocks =
     input?.meta && input.meta.reentryBlocks && typeof input.meta.reentryBlocks === "object"
       ? input.meta.reentryBlocks
       : {};
-  for (const [symbol, at] of Object.entries(storedBlocks)) {
-    const t = toNum(at);
-    if (symbol && t !== null && t > 0) blocks[String(symbol).toUpperCase()] = t;
+  for (const [symbol, value] of Object.entries(storedBlocks)) {
+    const at = toNum(value && typeof value === "object" ? value.at : value);
+    if (symbol && at !== null && at > 0) blocks[String(symbol).toUpperCase()] = at;
   }
   for (const t of state.trades) {
-    const at = toNum(t.exitTime);
-    if (t.symbol && at !== null && at > (blocks[String(t.symbol).toUpperCase()] || 0)) {
-      blocks[String(t.symbol).toUpperCase()] = at;
-    }
+    const at = tradeActivityAt(t);
+    const symbol = String(t.symbol || "").toUpperCase();
+    if (symbol && at > (blocks[symbol] || 0)) blocks[symbol] = at;
+  }
+  for (const p of state.positions) {
+    const at = positionActivityAt(p);
+    const symbol = String(p.symbol || "").toUpperCase();
+    if (symbol && at > (blocks[symbol] || 0)) blocks[symbol] = at;
   }
   state.meta.reentryBlocks = blocks;
   // Never auto-resume after a restart: opening trades unexpectedly is worse.

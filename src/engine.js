@@ -28,6 +28,11 @@ import { PriorityScheduler } from "./core/scheduler.js";
 import { CircuitBreakerRegistry } from "./core/circuitBreaker.js";
 import { StageLatencyTracker } from "./core/speed.js";
 import { RiskGuardManager } from "./core/riskGuards.js";
+import {
+  buildReentryIndex,
+  getReentryStatus,
+  resolveReentryWindow,
+} from "./core/reentryGuard.js";
 import { buildSyntheticBookFromQuote } from "./exchanges.js";
 
 const MAX_LOG_LINES = 300;
@@ -103,7 +108,6 @@ export class Engine {
     this.priceBusy = false;
     this._scanTimer = null;
     this._priceTimer = null;
-    this._cooldowns = new Map();
     this._lastEquityAt = 0;
     this._lastNoFilterLog = 0;
     this._lastNoMarginLog = 0;
@@ -299,7 +303,6 @@ export class Engine {
   reset() {
     const settings = this.state.settings;
     this.state = createInitialState(settings);
-    this._cooldowns.clear();
     this._lastEquityAt = 0;
     if (this._scanTimer) {
       this.timers.clearTimeout(this._scanTimer);
@@ -371,7 +374,6 @@ export class Engine {
           this.timers.clearTimeout(this._scanTimer);
           this._scanTimer = null;
         }
-        this._cooldowns.clear();
         this._lastEquityAt = 0;
         didReset = true;
         this.log("warn", `Total fund changed to $${merged.totalFund}: strategy reset.`);
@@ -649,6 +651,7 @@ export class Engine {
     }
     const openSymbols = new Set(openCounts.keys());
     const available = this._equitySnapshot().available;
+    const reentryIndex = this._reentryIndex();
     const rows = [];
 
     const longProfile = s.profiles?.long;
@@ -699,6 +702,7 @@ export class Engine {
       const explicitExcluded = excludedSet.has(coin.symbol);
       const tradable = Boolean(entry) || Boolean(s.allowCoinglassPrice && coin.price > 0);
       const activeProfile = (side === "short" ? shortProfile : longProfile) || s;
+      const reentry = this._reentryStatus(coin.symbol, reentryIndex);
       const row = {
         symbol: coin.symbol,
         name: coin.name,
@@ -722,8 +726,11 @@ export class Engine {
         open: openSymbols.has(coin.symbol),
         openCount: openCounts.get(coin.symbol) || 0,
         maxPerCoin: Math.max(1, toNum(activeProfile.maxPositionsPerCoin, 1) ?? 1),
-        cooling: this._isCooling(coin.symbol),
-        coolingRemainingSec: this._coolingRemainingSec(coin.symbol),
+        cooling: reentry.blocked,
+        coolingRemainingSec: reentry.remainingSec,
+        coolingUnlockAt: reentry.unlockAt,
+        coolingLastTradeAt: reentry.lastTradeAt,
+        coolingSource: reentry.source,
         isConflict,
         configured: Boolean(ev.configured),
         qualified,
@@ -747,28 +754,45 @@ export class Engine {
     return rows;
   }
 
-  _coolingRemainingSec(symbol) {
-    const s = this.state.settings;
-    // Derive the delay from the explicit re-entry settings. Older states only
-    // have `cooldownSec`, so fall back to it when the new fields are absent.
-    // Deriving here also protects against a stale `cooldownSec: 0` written by
-    // an older build while `reenterEnabled`/`reenterDelayMin` were already set.
-    const hasReenterFields = s.reenterEnabled !== undefined || s.reenterDelayMin !== undefined;
-    const cooldownSec = hasReenterFields
-      ? s.reenterEnabled
-        ? Math.max(0, toNum(s.reenterDelayMin, 0) * 60)
-        : 0
-      : Math.max(0, toNum(s.cooldownSec, 0));
-    if (!(cooldownSec > 0)) return 0;
-    const stored = toNum(this.state.meta?.reentryBlocks?.[symbol], 0) ?? 0;
-    const last = Math.max(this._cooldowns.get(symbol) || 0, stored);
-    if (!last) return 0;
-    const left = last + cooldownSec * 1000 - now();
-    return left > 0 ? Math.ceil(left / 1000) : 0;
+  _reentryIndex() {
+    return buildReentryIndex({
+      trades: this.state.trades,
+      positions: this.state.positions,
+      blocks: this.state.meta?.reentryBlocks,
+    });
   }
 
-  _isCooling(symbol) {
-    return this._coolingRemainingSec(symbol) > 0;
+  _reentryStatus(symbol, index = null) {
+    return getReentryStatus(
+      symbol,
+      index || this._reentryIndex(),
+      this.state.settings,
+      now()
+    );
+  }
+
+  _coolingRemainingSec(symbol, index = null) {
+    return this._reentryStatus(symbol, index).remainingSec;
+  }
+
+  _isCooling(symbol, index = null) {
+    return this._reentryStatus(symbol, index).blocked;
+  }
+
+  /**
+   * Persist the latest trade event for a coin. This is a fallback for symbols
+   * that later leave trade history/positions; the guard itself also derives the
+   * lock from both lists on every check.
+   */
+  _recordReentryEvent(symbol, at = now()) {
+    const key = String(symbol || "").trim().toUpperCase();
+    const ts = toNum(at, 0) ?? 0;
+    if (!key || !(ts > 0)) return;
+    if (!this.state.meta.reentryBlocks || typeof this.state.meta.reentryBlocks !== "object") {
+      this.state.meta.reentryBlocks = {};
+    }
+    const previous = toNum(this.state.meta.reentryBlocks[key], 0) ?? 0;
+    if (ts >= previous) this.state.meta.reentryBlocks[key] = ts;
   }
 
   /**
@@ -1080,7 +1104,7 @@ export class Engine {
       if (result.qualified > 0 && result.opened === 0 && now() - this._lastNoMarginLog > 30000) {
         this._lastNoMarginLog = now();
         const parts = [];
-        if (blocked.cooling) parts.push(`${blocked.cooling} in re-entry delay (${coolingList.slice(0, 4).join(", ")})`);
+        if (blocked.cooling) parts.push(`${blocked.cooling} locked by the same-coin rule (${coolingList.slice(0, 4).join(", ")})`);
         for (const key of ["stale", "no-feed", "coin-cap", "max-open", "no-margin", "excluded", "no-price", "no-size"]) {
           if (blocked[key]) parts.push(`${blocked[key]} ${key}`);
         }
@@ -1234,6 +1258,7 @@ export class Engine {
     };
 
     this.state.positions.push(pos);
+    this._recordReentryEvent(coin.symbol, pos.entryTime);
     this.state.meta.totalOpened++;
     this.state.meta.lastOpenAt = now();
     this.log(
@@ -1549,9 +1574,7 @@ export class Engine {
     this.state.trades.push(trade);
     this.state.positions = this.state.positions.filter((p) => p.id !== pos.id);
     const closedAt = now();
-    this._cooldowns.set(pos.symbol, closedAt);
-    if (!this.state.meta.reentryBlocks) this.state.meta.reentryBlocks = {};
-    this.state.meta.reentryBlocks[pos.symbol] = closedAt;
+    this._recordReentryEvent(pos.symbol, closedAt);
     this.state.meta.lastCloseAt = closedAt;
 
     this.log(
@@ -1561,11 +1584,11 @@ export class Engine {
         2
       )} (${round(roe, 2)}% ROE) · fees $${round(pos.entryFee + pos.exitFees, 2)}`
     );
-    const reentryDelay = toNum(this.state.settings.cooldownSec, 0);
-    if (reentryDelay > 0) {
+    const reentryWindow = resolveReentryWindow(this.state.settings);
+    if (reentryWindow.enabled) {
       this.log(
         "info",
-        `${pos.symbol} re-entry delay: no new ${pos.symbol} trade for ${durationText(reentryDelay)}.`
+        `${pos.symbol} same-coin lock: no new ${pos.symbol} trade for ${durationText(reentryWindow.windowSec)} after its latest open/close.`
       );
     }
 
@@ -1635,9 +1658,17 @@ export class Engine {
         maxPerCoin: Math.max(1, toNum(profile.maxPositionsPerCoin, 1) ?? 1),
       };
     }
-    const cooling = this._coolingRemainingSec(wanted);
-    if (cooling > 0) {
-      return { ok: false, error: "cooling", remainingSec: cooling, cooldownSec: s.cooldownSec };
+    const reentry = this._reentryStatus(wanted);
+    if (reentry.blocked) {
+      return {
+        ok: false,
+        error: "cooling",
+        remainingSec: reentry.remainingSec,
+        cooldownSec: reentry.windowSec,
+        unlockAt: reentry.unlockAt,
+        lastTradeAt: reentry.lastTradeAt,
+        source: reentry.source,
+      };
     }
     if (this._maxOpenReached(targetSide)) return { ok: false, error: "max-open" };
 
