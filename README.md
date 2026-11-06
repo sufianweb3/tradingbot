@@ -281,6 +281,12 @@ If CoinGlass changes its encryption version or endpoint, the dashboard shows the
 fetch error and existing cached signals are used for up to 5 minutes. New trades
 are not opened from signal data older than 2.5 minutes.
 
+If a browser cannot reach `capi.coinglass.com` directly (ad blockers, strict
+tracking protection, corporate proxies or regional blocking), the dashboard
+falls back to the same-origin `/api/coinglass/markets?page=N` proxy. The local
+Node server and the Vercel function at `api/coinglass/markets.js` fetch and
+decrypt the page server-side, so the browser only talks to its own origin.
+
 The top-bar indicator reports **Connected** after a successful scrape and
 **Disconnected** after a failed one. The scraped rows are shown live in the
 *CoinGlass live data* panel. `/api/health` exposes the same state as

@@ -148,6 +148,8 @@ async function boot() {
         stats: engine.getStats(),
         running: engine.state.meta.running,
         coinglassStale: cgClient.isStale(),
+        coinglassError: cgClient.status.lastError,
+        coinglassApiError: cgClient.status.apiError,
         stopNewEntries: cgClient.status.stopNewEntries,
       };
       bus.postMessage(payload);
