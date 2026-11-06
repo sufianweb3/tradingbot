@@ -130,32 +130,41 @@ Trades are limited by free margin. Changing `maxOpenPositions` or `maxTrades`
 (0 = unlimited) can cap the run. When max trades is reached the bot pauses itself
 and the report is ready to download.
 
-### Re-entry on the same coin
+### Same-coin lock (12 hours)
+
+The bot never opens a new trade on a coin while that coin is inside its
+same-coin lock window. The lock is **on by default for 12 hours** and starts
+from the coin's latest trade activity:
 
 | Setting | Default | Meaning |
 | ------- | ------- | ------- |
-| Max positions per coin | 1 | `1` = classic one-at-a-time rule. Raise it to stack several entries into the same move (e.g. `3` while a coin dumps). |
-| Re-enter trade (same coin) | Off | Off = the coin may trade again at the next scan as soon as the filters pass after a close. On = the delay below applies. |
-| Delay (minutes) | 30 | When **Re-enter trade** is on, no new trade opens on that coin for this many minutes, counted from the close time. |
+| Block same-coin re-entry | On | Off = the coin may trade again as soon as the filters pass after a close. |
+| Lock window (minutes) | 720 | No new trade on that coin for this long after its latest open, partial exit or close. |
 
-The delay is per coin: closing BTC blocks only BTC, so ETH can be entered
-immediately. It is also applied to manual opens and survives a server restart
-(the last close per coin is stored in the state snapshot). Setting the delay to
-`0` while the switch is on behaves the same as off.
+The lock is per coin: closing BTC blocks only BTC, so ETH can be entered
+immediately. It is enforced from **trade history and live positions**, not just
+the last close:
 
-Each entry is an independent position with its own SL/TP/trailing, so stacking
-`3` means three separate $250-margin entries (limited by free margin and
-`maxOpenPositions`). States created before this option existed are migrated from
-the old 300-second cooldown to the off state.
+- A coin with an open position is locked from its entry time.
+- A closed trade is locked from the later of its entry, partial-exit and close
+  times, so a fast close still leaves a full 12-hour window.
+- Stats are rebuilt from `state.trades` + `state.positions` on startup, so a
+  restart, backup import or manual open cannot bypass the lock.
+- The delay also applies to manual opens.
+- While the lock is on, it takes precedence over **Max positions per coin**:
+  stacking a second entry on the same coin is blocked until the window expires.
 
-The **Qualified** tab only counts coins that can trade *right now*. A coin that
-passes the filters but is inside its re-entry delay appears in the **coins** tab
-with a `RE-ENTRY <time>` badge and a disabled trade button showing the remaining
-time. The scan log also says why nothing opened, e.g.:
+A coin that passes the filters but is inside the lock appears in the **coins**
+tab with a `LOCKED <time>` badge and a disabled trade button showing the
+remaining time. The scan log also says why nothing opened, e.g.:
 
 ```
-Qualified: 2, opened 0 - 2 in re-entry delay (SXT (10h 58m), ARX (11h 3m)).
+Qualified: 2, opened 0 - 2 locked by the same-coin rule (SXT (10h 58m), ARX (11h 3m)).
 ```
+
+To allow stacking again, turn **Block same-coin re-entry** off (or set the lock
+window to `0`). States created before this option existed are migrated once to
+the 12-hour default; after that the switch is respected.
 
 
 ### 4. Exits
@@ -578,6 +587,7 @@ src/coinglass.js       encrypted CoinGlass fetch/decrypt + official API client
 src/exchanges.js       multi-venue discovery, symbol resolution, quotes
 src/trading.js         pure filters, levels, PnL, stats, positionAction
 src/engine.js          scan loop, trade opening, position management, persistence
+src/core/reentryGuard.js  per-coin 12h lock from trade history + live positions
 src/aiDataset.js       passive AI trade dataset logger (observer only)
 src/logExport.js       streams activity log + dataset as one downloadable JSONL
 src/store.js           defaults, normalisation, JSON store

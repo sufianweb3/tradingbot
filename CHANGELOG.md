@@ -5,6 +5,28 @@ All notable changes to this project are documented here.
 Releases are tagged `V1`, `V2`, ... on `main`, and `package.json` uses the matching
 SemVer major (`V1` = `1.x.x`). Runtime data is never committed.
 
+## [Unreleased]
+
+### Added
+
+- **12-hour same-coin lock** (`src/core/reentryGuard.js`). The bot now derives a
+  per-coin lock from both closed trade history and live positions, and blocks
+  any new entry on that coin until the window after its latest open, partial exit
+  or close has elapsed. The lock is on by default, survives restarts and backup
+  imports, applies to manual and live entries, and is shown as `LOCKED <time>` in
+  the scanner.
+- Tests for the pure guard (`test/reentryGuard.test.js`) and engine-level lock,
+  restart, migration and stacking behaviour.
+
+### Changed
+
+- The former "Re-enter trade (same coin)" option is now **Block same-coin
+  re-entry** with a **720-minute (12h)** default. Existing states that still
+  carry the old off/30-minute defaults are migrated to the 12-hour lock once;
+  after that the switch is respected.
+- Same-coin locking takes precedence over `maxPositionsPerCoin`, so stacking is
+  blocked while the lock is active.
+
 ## [V2] - 2026-11-04
 
 ### Added

@@ -82,7 +82,23 @@ export class LiveExecutor {
       };
     }
 
-    // 2. Daily loss cap guardrail (PRD L9)
+    // 2. Same-coin re-entry lock (checked again here so no live path can bypass
+    // the engine's scan/open filters).
+    const reentry = engine._reentryStatus(symbol);
+    if (reentry.blocked) {
+      return {
+        ok: false,
+        reason: `same-coin-lock (${Math.ceil(reentry.remainingSec / 60)}m remaining)`,
+      };
+    }
+    if (!engine._canOpenMore(symbol, side)) {
+      return { ok: false, reason: "max-positions-per-coin" };
+    }
+    if (engine._maxOpenReached(side)) {
+      return { ok: false, reason: "max-open-positions" };
+    }
+
+    // 3. Daily loss cap guardrail (PRD L9)
     const dailyLossCap = toNum(liveSettings.dailyLossCap, 0);
     if (dailyLossCap > 0) {
       const stats = engine.getStats();
@@ -93,31 +109,31 @@ export class LiveExecutor {
       }
     }
 
-    // 3. Max live open positions guardrail
+    // 4. Max live open positions guardrail
     const maxLivePositions = toNum(liveSettings.maxOpenPositions, 0);
     const openLive = engine.state.positions.filter((p) => p.mode === "live").length;
     if (maxLivePositions > 0 && openLive >= maxLivePositions) {
       return { ok: false, reason: `max-live-positions-reached (${openLive}/${maxLivePositions})` };
     }
 
-    // 4. Max margin per trade guardrail
+    // 5. Max margin per trade guardrail
     const maxMargin = toNum(liveSettings.marginPerTrade, 0);
     if (maxMargin > 0 && margin > maxMargin) {
       return { ok: false, reason: `margin-exceeds-live-cap ($${margin} > $${maxMargin})` };
     }
 
-    // 5. Symbol listed on active exchange
+    // 6. Symbol listed on active exchange
     const inst = this.instruments.get(symbol.toUpperCase());
     if (this.instruments.size > 0 && !inst) {
       return { ok: false, reason: `symbol-not-listed-on-${this.adapter.id}` };
     }
 
-    // 6. Minimum notional check
+    // 7. Minimum notional check
     if (inst && inst.minNotional && notional < inst.minNotional) {
       return { ok: false, reason: `notional-below-min ($${notional} < $${inst.minNotional})` };
     }
 
-    // 7. Balance check
+    // 8. Balance check
     try {
       const bal = await this.adapter.getBalance();
       if (margin > bal.availableUsdt) {
@@ -305,6 +321,7 @@ export class LiveExecutor {
     }
 
     engine.state.positions.push(pos);
+    engine._recordReentryEvent(pos.symbol, pos.entryTime);
     engine.emit("position:open", pos);
     engine._persist();
     return pos;
