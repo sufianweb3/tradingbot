@@ -5,9 +5,11 @@ import "@fontsource-variable/inter";
 import "./index.css";
 import App from "./App";
 
+const basename = import.meta.env.BASE_URL.replace(/\/$/, "");
+
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <BrowserRouter>
+    <BrowserRouter basename={basename || undefined}>
       <App />
     </BrowserRouter>
   </StrictMode>,

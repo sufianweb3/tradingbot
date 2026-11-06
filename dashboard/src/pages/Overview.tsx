@@ -12,7 +12,6 @@ import {
   SlidersHorizontal,
 } from "lucide-react";
 import {
-  START_FUND,
   type ActivityType,
   type Coin,
   type Position,
@@ -69,12 +68,20 @@ const activityTone: Record<ActivityType, string> = {
 };
 
 function EquityCard() {
-  const { series, equity, realised, openPnlValue, freeMargin, deployedMargin, positions } =
-    useApp();
+  const {
+    series,
+    equity,
+    realised,
+    openPnlValue,
+    freeMargin,
+    deployedMargin,
+    positions,
+    initialFund,
+  } = useApp();
   const [timeframe, setTimeframe] = useState<Timeframe>("1M");
   const data = series.slice(-timeframeCounts[timeframe]);
-  const change = equity - START_FUND;
-  const changePct = (change / START_FUND) * 100;
+  const change = equity - initialFund;
+  const changePct = initialFund > 0 ? (change / initialFund) * 100 : 0;
   const openNotional = positions.reduce(
     (sum, position) => sum + positionMetrics(position).notional,
     0,
@@ -95,7 +102,7 @@ function EquityCard() {
           </div>
           <div className="mt-2.5 flex flex-wrap gap-x-5 gap-y-1 text-[10.5px] text-muted">
             <span>
-              Start <span className="num text-ink-2">{usd(START_FUND)}</span>
+              Start <span className="num text-ink-2">{usd(initialFund)}</span>
             </span>
             <span>
               Realised{" "}

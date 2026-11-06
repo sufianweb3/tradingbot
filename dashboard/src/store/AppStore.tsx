@@ -27,6 +27,24 @@ import {
   type Trade,
 } from "../lib/data";
 import {
+  api,
+  liveGuardrailsPatch,
+  liveFromSettings,
+  mapCoins,
+  mapEquity,
+  mapExchanges,
+  mapLogs,
+  mapPositions,
+  mapTelemetry,
+  mapTrades,
+  metaTimestamp,
+  readableError,
+  type BotBootstrap,
+  type BotDashboard,
+  type BotExchangeStatus,
+  type BotSettings,
+} from "../lib/api";
+import {
   maxDrawdown,
   openPnl,
   positionMetrics,
@@ -37,6 +55,7 @@ import { usd } from "../lib/format";
 
 export type ThemeMode = "light" | "dark" | "system";
 export type TradeMode = "paper" | "live";
+export type DataSource = "loading" | "live" | "sample";
 
 export interface ToastAction {
   label: string;
@@ -69,6 +88,17 @@ export interface ConfirmRequest {
   onConfirm: () => void;
 }
 
+export interface ExchangeTestResult {
+  ok: boolean;
+  balance?: number;
+  error?: string;
+}
+
+export interface BackupPayload {
+  backup: unknown;
+  filename?: string;
+}
+
 interface AppContextValue {
   running: boolean;
   toggleRunning: () => void;
@@ -93,6 +123,7 @@ interface AppContextValue {
   realised: number;
   deployedMargin: number;
   freeMargin: number;
+  initialFund: number;
   series: EquityPoint[];
   stats: ReturnType<typeof tradeStats>;
   drawdown: number;
@@ -128,21 +159,35 @@ interface AppContextValue {
     secret: string;
     passphrase?: string;
     testnet: boolean;
-  }) => void;
+  }) => Promise<boolean>;
+  testExchange: (data: {
+    venue: string;
+    apiKey: string;
+    secret: string;
+    passphrase?: string;
+  }) => Promise<ExchangeTestResult>;
   disconnectExchange: (id: string) => void;
   exchangeWizardVenue: string | null;
   openExchangeWizard: (venue: string) => void;
   closeExchangeWizard: () => void;
   liveGuardrails: LiveGuardrails;
   updateLiveGuardrails: (patch: Partial<LiveGuardrails>) => void;
+  saveLiveGuardrails: (next: LiveGuardrails) => Promise<boolean>;
   killSwitch: boolean;
   setKillSwitch: (value: boolean) => void;
   requestConfirm: (request: ConfirmRequest) => void;
   confirmRequest: ConfirmRequest | null;
   resolveConfirm: (confirmed: boolean) => void;
   telemetry: typeof seedTelemetry;
+  dataSource: DataSource;
+  apiError: string | null;
+  settings: BotSettings | null;
+  refresh: () => Promise<void>;
+  saveSettings: (patch: Record<string, unknown>) => Promise<boolean>;
+  setCoinglassKey: (key: string) => Promise<boolean>;
+  exportBackup: (includeKeys: boolean) => Promise<BackupPayload | null>;
+  importBackup: (backup: unknown) => Promise<boolean>;
 }
-
 
 const AppContext = createContext<AppContextValue | null>(null);
 
@@ -166,6 +211,13 @@ const cloneActivity = () =>
 const cloneCoins = () =>
   seedCoins.map((coin) => ({ ...coin, spark: [...coin.spark] }));
 
+const optionalNumber = (value: unknown): number | null => {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (value === null || value === undefined) return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
 function storedTheme(): ThemeMode {
   const stored = localStorage.getItem("oi-theme");
   return stored === "light" || stored === "dark" || stored === "system"
@@ -185,9 +237,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [lastScan, setLastScan] = useState(new Date(Date.now() - 11_000));
   const [updatedAt, setUpdatedAt] = useState(new Date());
   const [scanCount, setScanCount] = useState(0);
-  const [baseSeries] = useState(() =>
+  const [baseSeries, setBaseSeries] = useState<EquityPoint[]>(() =>
     buildEquitySeries(START_FUND, initialEquity),
   );
+  const [initialFund, setInitialFund] = useState(START_FUND);
+  const [serverEquity, setServerEquity] = useState<number | null>(null);
+  const [serverAvailable, setServerAvailable] = useState<number | null>(null);
+  const [dataSource, setDataSource] = useState<DataSource>("loading");
+  const [apiError, setApiError] = useState<string | null>(null);
+  const [settings, setSettings] = useState<BotSettings | null>(null);
   const [themeMode, setThemeModeState] = useState<ThemeMode>(() => {
     try {
       return storedTheme();
@@ -218,9 +276,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
   );
   const [liveGuardrails, setLiveGuardrails] = useState<LiveGuardrails>({
     exchange: "bybit",
-    marginPerTrade: 500,
-    dailyLossCap: 250,
-    maxOpenPositions: 4,
+    marginPerTrade: 0,
+    dailyLossCap: 0,
+    maxOpenPositions: 0,
     clampLeverage: true,
   });
   const [killSwitch, setKillSwitchState] = useState(false);
@@ -229,6 +287,22 @@ export function AppProvider({ children }: { children: ReactNode }) {
   );
   const [telemetry, setTelemetry] = useState(seedTelemetry);
   const toastId = useRef(0);
+  const dataSourceRef = useRef<DataSource>("loading");
+  const initialFundRef = useRef(START_FUND);
+  const coinsRef = useRef<Coin[]>(coins);
+  const activityClearedRef = useRef(0);
+
+  useEffect(() => {
+    dataSourceRef.current = dataSource;
+  }, [dataSource]);
+
+  useEffect(() => {
+    initialFundRef.current = initialFund;
+  }, [initialFund]);
+
+  useEffect(() => {
+    coinsRef.current = coins;
+  }, [coins]);
 
   const resolvedTheme: "light" | "dark" =
     themeMode === "system" ? (systemDark ? "dark" : "light") : themeMode;
@@ -255,7 +329,210 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return () => window.clearTimeout(timeout);
   }, [toast]);
 
+  const notify = useCallback(
+    (
+      title: string,
+      description?: string,
+      action?: ToastAction,
+      tone: ToastTone = "success",
+    ) => {
+      toastId.current += 1;
+      setToast({ id: toastId.current, title, description, action, tone });
+    },
+    [],
+  );
+
+  const dismissToast = useCallback(() => setToast(null), []);
+
+  const addActivity = useCallback((item: Omit<ActivityItem, "id" | "at">) => {
+    setActivity((current) => [
+      {
+        ...item,
+        id: `act_${Date.now()}_${Math.round(Math.random() * 1000)}`,
+        at: new Date(),
+      },
+      ...current,
+    ]);
+  }, []);
+
+  const setThemeMode = useCallback((mode: ThemeMode) => {
+    setThemeModeState(mode);
+    try {
+      localStorage.setItem("oi-theme", mode);
+    } catch {
+      // Persistence is optional.
+    }
+  }, []);
+
+  const setReduceMotion = useCallback((value: boolean) => {
+    setReduceMotionState(value);
+    try {
+      localStorage.setItem("oi-reduce-motion", String(value));
+    } catch {
+      // Persistence is optional.
+    }
+  }, []);
+
+  /* --------------------------------------------------------------------- */
+  /* Bot API hydration                                                     */
+  /* --------------------------------------------------------------------- */
+
+  const applySettings = useCallback((next: BotSettings | null | undefined) => {
+    if (!next) return;
+    setSettings(next);
+    setModeState(next.mode === "live" ? "live" : "paper");
+    const guardrails = liveFromSettings(next);
+    setLiveGuardrails((current) => ({ ...current, ...guardrails }));
+  }, []);
+
+  const applyExchangeStatus = useCallback((status: BotExchangeStatus | null) => {
+    setExchanges((current) => mapExchanges(status, current));
+    if (status?.mode) setModeState(status.mode === "live" ? "live" : "paper");
+    if (status?.activeVenue) {
+      setLiveGuardrails((current) => ({ ...current, exchange: status.activeVenue ?? current.exchange }));
+    }
+  }, []);
+
+  const applyBootstrap = useCallback(
+    (boot: BotBootstrap) => {
+      const markets = mapCoins(boot.markets);
+      const names = new Map(markets.map((coin) => [coin.symbol, coin.name]));
+      const fund = Number(boot.initialFund ?? boot.settings?.totalFund ?? START_FUND);
+      const safeFund = Number.isFinite(fund) && fund > 0 ? fund : START_FUND;
+      initialFundRef.current = safeFund;
+      setInitialFund(safeFund);
+      setCoins(markets);
+      setPositions(mapPositions(boot.positions, names));
+      setTrades(mapTrades(boot.trades, names));
+      setActivity(mapLogs(boot.logs, activityClearedRef.current));
+      setBaseSeries(mapEquity(boot.equityCurve, safeFund, boot.stats?.equity));
+      setServerEquity(optionalNumber(boot.stats?.equity));
+      setServerAvailable(optionalNumber(boot.stats?.available));
+      applySettings(boot.settings);
+      setRunning(Boolean(boot.meta?.running));
+      setKillSwitchState(Boolean(boot.meta?.killSwitch));
+      setTelemetry(mapTelemetry(boot.speed));
+      setLastScan(metaTimestamp(boot.meta));
+      setUpdatedAt(new Date(boot.serverTime ?? Date.now()));
+      setScanCount(Number(boot.meta?.scanCount ?? 0));
+    },
+    [applySettings],
+  );
+
+  const applyDashboard = useCallback((dash: BotDashboard) => {
+    const markets = mapCoins(dash.markets);
+    const names = new Map(markets.map((coin) => [coin.symbol, coin.name]));
+    const nextFund = optionalNumber(dash.stats?.initialFund);
+    const fund = nextFund && nextFund > 0 ? nextFund : initialFundRef.current;
+    if (fund !== initialFundRef.current) {
+      initialFundRef.current = fund;
+      setInitialFund(fund);
+    }
+    setCoins(markets);
+    setPositions(mapPositions(dash.positions, names));
+    setActivity(mapLogs(dash.logs, activityClearedRef.current));
+    setBaseSeries((current) => {
+      const next = mapEquity(dash.equityCurve, fund, dash.stats?.equity);
+      return next.length ? next : current;
+    });
+    setServerEquity(optionalNumber(dash.stats?.equity));
+    setServerAvailable(optionalNumber(dash.stats?.available));
+    setRunning(Boolean(dash.meta?.running));
+    setKillSwitchState(Boolean(dash.meta?.killSwitch));
+    setTelemetry(mapTelemetry(dash.speed));
+    setLastScan(metaTimestamp(dash.meta));
+    setUpdatedAt(new Date(dash.serverTime ?? Date.now()));
+    setScanCount(Number(dash.meta?.scanCount ?? 0));
+  }, []);
+
+  const refresh = useCallback(async () => {
+    if (dataSourceRef.current !== "live") return;
+    try {
+      const [dashboard, status] = await Promise.all([
+        api.dashboard(),
+        api.exchangeStatus().catch(() => null),
+      ]);
+      applyDashboard(dashboard);
+      if (status) applyExchangeStatus(status);
+      setApiError(null);
+    } catch (error) {
+      setApiError(readableError(error));
+    }
+  }, [applyDashboard, applyExchangeStatus]);
+
+  const refreshTrades = useCallback(async () => {
+    if (dataSourceRef.current !== "live") return;
+    try {
+      const response = await api.trades(200);
+      const names = new Map(coinsRef.current.map((coin) => [coin.symbol, coin.name]));
+      setTrades(mapTrades(response.trades, names));
+    } catch {
+      // Trade history is refreshed on the next tick.
+    }
+  }, []);
+
   useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const boot = await api.bootstrap();
+        if (cancelled) return;
+        applyBootstrap(boot);
+        setDataSource("live");
+        dataSourceRef.current = "live";
+        setApiError(null);
+        try {
+          const status = await api.exchangeStatus();
+          if (!cancelled) applyExchangeStatus(status);
+        } catch {
+          // Exchange status is optional during boot.
+        }
+      } catch (error) {
+        if (cancelled) return;
+        setDataSource("sample");
+        dataSourceRef.current = "sample";
+        setApiError(readableError(error));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [applyBootstrap, applyExchangeStatus]);
+
+  useEffect(() => {
+    if (dataSource !== "live") return;
+    const tick = () => {
+      if (document.visibilityState === "visible") void refresh();
+    };
+    const interval = window.setInterval(tick, 4000);
+    return () => window.clearInterval(interval);
+  }, [dataSource, refresh]);
+
+  useEffect(() => {
+    if (dataSource !== "live") return;
+    const tick = () => {
+      if (document.visibilityState === "visible") void refreshTrades();
+    };
+    const interval = window.setInterval(tick, 15000);
+    return () => window.clearInterval(interval);
+  }, [dataSource, refreshTrades]);
+
+  const refreshNow = useCallback(async () => {
+    if (dataSourceRef.current !== "live") {
+      notify("Sample data", "The bot API is not connected. Start the bot server to load live data.", undefined, "info");
+      return;
+    }
+    await refresh();
+    await refreshTrades();
+    notify("Data refreshed", "Account, positions, scanner and activity are up to date.", undefined, "info");
+  }, [notify, refresh, refreshTrades]);
+
+  /* --------------------------------------------------------------------- */
+  /* Sample-only market ticker                                             */
+  /* --------------------------------------------------------------------- */
+
+  useEffect(() => {
+    if (dataSource === "live") return;
     if (!running) return;
     const interval = window.setInterval(() => {
       setPositions((current) =>
@@ -292,51 +569,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       }));
     }, 2600);
     return () => window.clearInterval(interval);
-  }, [running]);
-
-  const notify = useCallback(
-    (
-      title: string,
-      description?: string,
-      action?: ToastAction,
-      tone: ToastTone = "success",
-    ) => {
-      toastId.current += 1;
-      setToast({ id: toastId.current, title, description, action, tone });
-    },
-    [],
-  );
-
-  const dismissToast = useCallback(() => setToast(null), []);
-
-  const addActivity = useCallback((item: Omit<ActivityItem, "id" | "at">) => {
-    setActivity((current) => [
-      {
-        ...item,
-        id: `act_${Date.now()}_${Math.round(Math.random() * 1000)}`,
-        at: new Date(),
-      },
-      ...current,
-    ]);
-  }, []);
-
-  const setThemeMode = useCallback((mode: ThemeMode) => {
-    setThemeModeState(mode);
-    try {
-      localStorage.setItem("oi-theme", mode);
-    } catch {
-      // Local preview — persistence is optional.
-    }
-  }, []);
-
-  const setReduceMotion = useCallback((value: boolean) => {
-    setReduceMotionState(value);
-    try {
-      localStorage.setItem("oi-reduce-motion", String(value));
-    } catch {
-      // Local preview — persistence is optional.
-    }
-  }, []);
+  }, [dataSource, running]);
 
   const activeExchange = useMemo(
     () =>
@@ -348,8 +581,31 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const setMode = useCallback(
     (next: TradeMode) => {
-      setModeState(next);
       if (next === "paper") {
+        if (dataSource === "live") {
+          void (async () => {
+            try {
+              await api.mode("paper");
+              setModeState("paper");
+              addActivity({
+                type: "system",
+                title: "Switched to paper mode",
+                detail: "All fills and PnL are simulated. No exchange orders are sent.",
+              });
+              notify(
+                "Paper trading active",
+                "Positions and fills are simulated locally.",
+                undefined,
+                "info",
+              );
+              await refresh();
+            } catch (error) {
+              notify("Could not switch to paper", readableError(error), undefined, "danger");
+            }
+          })();
+          return;
+        }
+        setModeState(next);
         addActivity({
           type: "system",
           title: "Switched to paper mode",
@@ -363,7 +619,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         );
       }
     },
-    [addActivity, notify],
+    [addActivity, dataSource, notify, refresh],
   );
 
   const openLiveConfirm = useCallback(() => setLiveConfirmOpen(true), []);
@@ -379,6 +635,30 @@ export function AppProvider({ children }: { children: ReactNode }) {
       );
       return;
     }
+    if (dataSource === "live") {
+      void (async () => {
+        try {
+          await api.mode("live");
+          setModeState("live");
+          setLiveConfirmOpen(false);
+          addActivity({
+            type: "system",
+            title: "Live execution armed",
+            detail: `${activeExchange.name} selected. Guardrails: $${liveGuardrails.marginPerTrade} max margin, $${liveGuardrails.dailyLossCap} daily loss cap.`,
+          });
+          notify(
+            "Live mode armed",
+            `${activeExchange.name} will receive orders. The kill switch and guardrails are active.`,
+            undefined,
+            "danger",
+          );
+          await refresh();
+        } catch (error) {
+          notify("Live mode blocked", readableError(error), undefined, "danger");
+        }
+      })();
+      return;
+    }
     setModeState("live");
     setLiveConfirmOpen(false);
     addActivity({
@@ -392,12 +672,35 @@ export function AppProvider({ children }: { children: ReactNode }) {
       undefined,
       "danger",
     );
-  }, [activeExchange, addActivity, liveGuardrails, notify]);
+  }, [activeExchange, addActivity, dataSource, liveGuardrails, notify, refresh]);
 
   const setActiveExchange = useCallback(
     (id: string) => {
       const exchange = exchanges.find((item) => item.id === id);
       if (!exchange) return;
+      if (dataSource === "live") {
+        void (async () => {
+          try {
+            await api.exchangeSelect(id);
+            setExchanges((current) =>
+              current.map((item) => ({ ...item, active: item.id === id })),
+            );
+            setLiveGuardrails((current) => ({ ...current, exchange: id }));
+            addActivity({
+              type: "system",
+              title: `Active exchange: ${exchange.name}`,
+              detail: exchange.connected
+                ? `Execution routes to ${exchange.name} (${exchange.tier}).`
+                : `${exchange.name} selected. Connect API keys before going live.`,
+            });
+            notify(`Active exchange: ${exchange.name}`, exchange.tier, undefined, "info");
+            await refresh();
+          } catch (error) {
+            notify("Could not switch exchange", readableError(error), undefined, "danger");
+          }
+        })();
+        return;
+      }
       setExchanges((current) =>
         current.map((item) => ({ ...item, active: item.id === id })),
       );
@@ -411,64 +714,176 @@ export function AppProvider({ children }: { children: ReactNode }) {
       });
       notify(`Active exchange: ${exchange.name}`, exchange.tier, undefined, "info");
     },
-    [addActivity, exchanges, notify],
+    [addActivity, dataSource, exchanges, notify, refresh],
   );
 
-  const connectExchange = useCallback(
-    ({
+  const testExchange = useCallback(
+    async ({
       venue,
       apiKey,
       secret,
       passphrase,
-      testnet,
+    }: {
+      venue: string;
+      apiKey: string;
+      secret: string;
+      passphrase?: string;
+    }): Promise<ExchangeTestResult> => {
+      if (dataSource !== "live") {
+        await new Promise((resolve) => window.setTimeout(resolve, 900));
+        return { ok: true, balance: Math.round((500 + Math.random() * 2_200) * 100) / 100 };
+      }
+      try {
+        const result = await api.exchangeTest({ venue, apiKey, secret, passphrase });
+        return {
+          ok: true,
+          balance: Number(result.balance?.equityUsdt ?? result.balance?.availableUsdt ?? 0),
+        };
+      } catch (error) {
+        return { ok: false, error: readableError(error) };
+      }
+    },
+    [dataSource],
+  );
+
+  const connectExchange = useCallback(
+    async ({
+      venue,
+      apiKey,
+      secret,
+      passphrase,
     }: {
       venue: string;
       apiKey: string;
       secret: string;
       passphrase?: string;
       testnet: boolean;
-    }) => {
+    }): Promise<boolean> => {
       const exchange = exchanges.find((item) => item.id === venue);
-      if (!exchange) return;
-      const maskedKey = `•••• ${apiKey.slice(-4).padStart(4, "0")}`;
-      const balance = Math.round((500 + Math.random() * 2_200) * 100) / 100;
-      setExchanges((current) =>
-        current.map((item) =>
-          item.id === venue
-            ? {
-                ...item,
-                connected: true,
-                active: true,
-                status: "connected",
-                maskedKey,
-                balance,
-              }
-            : { ...item, active: false },
-        ),
-      );
-      setLiveGuardrails((current) => ({ ...current, exchange: venue }));
-      setExchangeWizardVenue(null);
-      addActivity({
-        type: "system",
-        title: `Connected ${exchange.name}`,
-        detail: `${testnet ? "Testnet" : "Mainnet"} key ${maskedKey} verified. Trade permission enabled, withdrawals disabled.`,
-      });
-      notify(
-        `Connected ${exchange.name}`,
-        `${testnet ? "Testnet" : "Mainnet"} key verified. Balance ${usd(balance)}.`,
-        {
-          label: "Set active",
-          onClick: () => setActiveExchange(venue),
-        },
-      );
+      if (!exchange) return false;
+
+      if (dataSource !== "live") {
+        const maskedKey = `•••• ${apiKey.slice(-4).padStart(4, "0")}`;
+        const balance = Math.round((500 + Math.random() * 2_200) * 100) / 100;
+        setExchanges((current) =>
+          current.map((item) =>
+            item.id === venue
+              ? {
+                  ...item,
+                  connected: true,
+                  active: true,
+                  status: "connected",
+                  maskedKey,
+                  balance,
+                }
+              : { ...item, active: false },
+          ),
+        );
+        setLiveGuardrails((current) => ({ ...current, exchange: venue }));
+        setExchangeWizardVenue(null);
+        addActivity({
+          type: "system",
+          title: `Connected ${exchange.name}`,
+          detail: `Key ${maskedKey} verified. Trade permission enabled, withdrawals disabled.`,
+        });
+        notify(
+          `Connected ${exchange.name}`,
+          `Key verified. Balance ${usd(balance)}.`,
+          { label: "Set active", onClick: () => setActiveExchange(venue) },
+        );
+        return true;
+      }
+
+      try {
+        const test = await api.exchangeTest({ venue, apiKey, secret, passphrase });
+        const balance = Number(test.balance?.equityUsdt ?? test.balance?.availableUsdt ?? 0);
+        const result = await api.exchangeConnect({ venue, apiKey, secret, passphrase });
+        const maskedKey = result.maskedKey ?? `•••• ${apiKey.slice(-4)}`;
+        setExchanges((current) =>
+          current.map((item) =>
+            item.id === venue
+              ? {
+                  ...item,
+                  connected: true,
+                  active: true,
+                  status: "connected",
+                  maskedKey,
+                  balance,
+                }
+              : { ...item, active: false },
+          ),
+        );
+        setLiveGuardrails((current) => ({ ...current, exchange: venue }));
+        setExchangeWizardVenue(null);
+        if (result.settings) applySettings(result.settings);
+        addActivity({
+          type: "system",
+          title: `Connected ${exchange.name}`,
+          detail: `Key ${maskedKey} verified. Trade permission enabled, withdrawals disabled.`,
+        });
+        notify(
+          `Connected ${exchange.name}`,
+          `Key verified and stored in the bot vault. Balance ${usd(balance)}.`,
+          { label: "Set active", onClick: () => setActiveExchange(venue) },
+        );
+        await refresh();
+        return true;
+      } catch (error) {
+        notify(
+          `Could not connect ${exchange.name}`,
+          readableError(error),
+          undefined,
+          "danger",
+        );
+        return false;
+      }
     },
-    [addActivity, exchanges, notify, setActiveExchange],
+    [addActivity, applySettings, dataSource, exchanges, notify, refresh, setActiveExchange],
   );
 
   const disconnectExchange = useCallback(
     (id: string) => {
       const exchange = exchanges.find((item) => item.id === id);
       if (!exchange) return;
+      if (dataSource === "live") {
+        void (async () => {
+          try {
+            await api.exchangeDisconnect(id);
+            setExchanges((current) =>
+              current.map((item) =>
+                item.id === id
+                  ? {
+                      ...item,
+                      connected: false,
+                      active: false,
+                      status: item.readOnly ? "price-feed" : item.liveSupported ? "available" : "paper",
+                      maskedKey: "",
+                      balance: 0,
+                    }
+                  : item,
+              ),
+            );
+            if (activeExchange.id === id) {
+              setLiveGuardrails((current) => ({ ...current, exchange: "" }));
+            }
+            addActivity({
+              type: "system",
+              title: `Disconnected ${exchange.name}`,
+              detail: "API keys removed from the bot vault.",
+            });
+            notify(
+              `Disconnected ${exchange.name}`,
+              "Keys were removed from the bot vault.",
+              undefined,
+              "warn",
+            );
+            await refresh();
+          } catch (error) {
+            notify("Could not disconnect", readableError(error), undefined, "danger");
+          }
+        })();
+        return;
+      }
       setExchanges((current) =>
         current.map((item) =>
           item.id === id
@@ -501,7 +916,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         "warn",
       );
     },
-    [activeExchange.id, addActivity, exchanges, mode, notify],
+    [activeExchange.id, addActivity, dataSource, exchanges, mode, notify, refresh],
   );
 
   const updateLiveGuardrails = useCallback(
@@ -516,8 +931,131 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [],
   );
 
+  const saveLiveGuardrails = useCallback(
+    async (next: LiveGuardrails) => {
+      setLiveGuardrails(next);
+      if (dataSource !== "live") return true;
+      try {
+        const result = await api.saveSettings(liveGuardrailsPatch(next));
+        if (result.settings) applySettings(result.settings);
+        return true;
+      } catch (error) {
+        notify("Could not save guardrails", readableError(error), undefined, "danger");
+        return false;
+      }
+    },
+    [applySettings, dataSource, notify],
+  );
+
+  const saveSettings = useCallback(
+    async (patch: Record<string, unknown>) => {
+      if (patch && typeof patch === "object" && patch.live) {
+        setLiveGuardrails((current) => ({
+          ...current,
+          ...(patch.live as Partial<LiveGuardrails>),
+        }));
+      }
+      if (dataSource !== "live") return true;
+      try {
+        const result = await api.saveSettings(patch);
+        if (result.settings) applySettings(result.settings);
+        if (result.reset) {
+          await refresh();
+          await refreshTrades();
+        }
+        return true;
+      } catch (error) {
+        notify("Could not save settings", readableError(error), undefined, "danger");
+        return false;
+      }
+    },
+    [applySettings, dataSource, notify, refresh, refreshTrades],
+  );
+
+  const setCoinglassKey = useCallback(
+    async (key: string) => {
+      if (dataSource !== "live") return true;
+      try {
+        const result = await api.coinglassKey(key.trim() || null);
+        if (result.settings) applySettings(result.settings);
+        notify(
+          key.trim() ? "CoinGlass key saved" : "CoinGlass key cleared",
+          key.trim()
+            ? "The bot will use the official API on the next market refresh."
+            : "The bot will fall back to website scraping.",
+          undefined,
+          "success",
+        );
+        await refresh();
+        return true;
+      } catch (error) {
+        notify("Could not save the CoinGlass key", readableError(error), undefined, "danger");
+        return false;
+      }
+    },
+    [applySettings, dataSource, notify, refresh],
+  );
+
+  const exportBackup = useCallback(
+    async (includeKeys: boolean): Promise<BackupPayload | null> => {
+      if (dataSource !== "live") return null;
+      try {
+        const result = await api.backupExport(includeKeys);
+        return { backup: result.backup, filename: result.filename };
+      } catch (error) {
+        notify("Backup failed", readableError(error), undefined, "danger");
+        return null;
+      }
+    },
+    [dataSource, notify],
+  );
+
+  const importBackup = useCallback(
+    async (backup: unknown) => {
+      if (dataSource !== "live") return false;
+      try {
+        await api.backupImport(backup);
+        await refresh();
+        await refreshTrades();
+        notify("Backup imported", "State, settings and history were restored on the bot.", undefined, "success");
+        return true;
+      } catch (error) {
+        notify("Import failed", readableError(error), undefined, "danger");
+        return false;
+      }
+    },
+    [dataSource, notify, refresh, refreshTrades],
+  );
+
   const setKillSwitch = useCallback(
     (value: boolean) => {
+      if (dataSource === "live") {
+        void (async () => {
+          try {
+            await api.killSwitch(value);
+            setKillSwitchState(value);
+            addActivity({
+              type: "risk",
+              title: value ? "Kill switch activated" : "Kill switch released",
+              detail: value
+                ? "All new entries are blocked. Open positions continue to be managed."
+                : "New entries are allowed again on the next qualified signal.",
+            });
+            notify(
+              value ? "Kill switch active" : "Kill switch released",
+              value
+                ? "New entries are blocked. Existing positions stay managed."
+                : "New entries can reopen on the next scan.",
+              undefined,
+              value ? "danger" : "success",
+            );
+            await refresh();
+          } catch (error) {
+            notify("Kill switch request failed", readableError(error), undefined, "danger");
+          }
+        })();
+        return;
+      }
       setKillSwitchState(value);
       addActivity({
         type: "risk",
@@ -535,7 +1073,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         value ? "danger" : "success",
       );
     },
-    [addActivity, notify],
+    [addActivity, dataSource, notify, refresh],
   );
 
   const requestConfirm = useCallback((request: ConfirmRequest) => {
@@ -552,6 +1090,30 @@ export function AppProvider({ children }: { children: ReactNode }) {
   );
 
   const reconcile = useCallback(() => {
+    if (dataSource === "live") {
+      void (async () => {
+        try {
+          const result = await api.reconcile();
+          addActivity({
+            type: "system",
+            title: "Exchange state reconciled",
+            detail: "Open positions, protection stops and balances verified across connected venues.",
+          });
+          notify(
+            "Reconciliation complete",
+            typeof result.message === "string"
+              ? result.message
+              : "Positions, stops and balances match the exchange snapshot.",
+            undefined,
+            "success",
+          );
+          await refresh();
+        } catch (error) {
+          notify("Reconciliation failed", readableError(error), undefined, "danger");
+        }
+      })();
+      return;
+    }
     addActivity({
       type: "system",
       title: "Exchange state reconciled",
@@ -563,10 +1125,35 @@ export function AppProvider({ children }: { children: ReactNode }) {
       undefined,
       "success",
     );
-  }, [addActivity, notify]);
-
+  }, [addActivity, dataSource, notify, refresh]);
 
   const toggleRunning = useCallback(() => {
+    if (dataSource === "live") {
+      const next = !running;
+      void (async () => {
+        try {
+          await api.control(next ? "start" : "pause");
+          setRunning(next);
+          notify(
+            next ? "Engine running" : "Engine paused",
+            next
+              ? "Scanning the CoinGlass universe on the configured cadence."
+              : "Open positions stay marked. No new entries will open.",
+          );
+          addActivity({
+            type: "system",
+            title: next ? "Engine started" : "Engine paused",
+            detail: next
+              ? "Scan loop resumed"
+              : "Scan loop halted by the operator, positions remain open",
+          });
+          await refresh();
+        } catch (error) {
+          notify("Engine control failed", readableError(error), undefined, "danger");
+        }
+      })();
+      return;
+    }
     setRunning((current) => {
       const next = !current;
       notify(
@@ -584,9 +1171,30 @@ export function AppProvider({ children }: { children: ReactNode }) {
       });
       return next;
     });
-  }, [addActivity, notify]);
+  }, [addActivity, dataSource, notify, refresh, running]);
 
   const scanNow = useCallback(() => {
+    if (dataSource === "live") {
+      void (async () => {
+        try {
+          const result = await api.scan();
+          await refresh();
+          await refreshTrades();
+          const qualified = Number(result.qualified ?? 0);
+          const opened = Number(result.opened ?? 0);
+          const total = Number(result.total ?? 0);
+          notify(
+            "Scan complete",
+            `${total} coins scanned, ${qualified} qualified, ${opened} position${opened === 1 ? "" : "s"} opened.`,
+            undefined,
+            "success",
+          );
+        } catch (error) {
+          notify("Scan failed", readableError(error), undefined, "danger");
+        }
+      })();
+      return;
+    }
     const qualified = coins.filter((coin) => coin.status === "qualified").length;
     const scanned = 412 + Math.round(Math.random() * 6);
     setLastScan(new Date());
@@ -601,7 +1209,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       "Scan complete",
       `${qualified} qualified signals. ${running ? "The engine evaluates entries on the next pass." : "Dry run while paused."}`,
     );
-  }, [addActivity, coins, notify, running]);
+  }, [addActivity, coins, dataSource, notify, refresh, refreshTrades, running]);
 
   const autoScan = useCallback(() => {
     setLastScan(new Date());
@@ -609,9 +1217,28 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setScanCount((count) => count + 1);
   }, []);
 
-  const closePosition = useCallback(    (id: string) => {
+  const closePosition = useCallback(
+    (id: string) => {
       const position = positions.find((item) => item.id === id);
       if (!position) return;
+      if (dataSource === "live") {
+        void (async () => {
+          try {
+            await api.closeTrade(id);
+            await refresh();
+            await refreshTrades();
+            notify(
+              `Closed ${position.symbol} ${position.side}`,
+              "The exchange position and its protection orders were closed.",
+              undefined,
+              "success",
+            );
+          } catch (error) {
+            notify("Close failed", readableError(error), undefined, "danger");
+          }
+        })();
+        return;
+      }
       const metrics = positionMetrics(position);
       const closed: Trade = {
         id: `trade_${Date.now()}`,
@@ -649,7 +1276,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         },
       );
     },
-    [addActivity, dismissToast, notify, positions],
+    [addActivity, dataSource, dismissToast, notify, positions, refresh, refreshTrades],
   );
 
   const openTrade = useCallback(
@@ -670,6 +1297,25 @@ export function AppProvider({ children }: { children: ReactNode }) {
           undefined,
           "danger",
         );
+        return;
+      }
+      if (dataSource === "live") {
+        const direction = side ?? coin.direction;
+        void (async () => {
+          try {
+            await api.openTrade(coin.symbol, direction);
+            await refresh();
+            await refreshTrades();
+            notify(
+              `Opened ${coin.symbol} ${direction}`,
+              `The bot submitted the position on ${activeExchange.name} with its protection ladder.`,
+              undefined,
+              mode === "live" ? "warn" : "success",
+            );
+          } catch (error) {
+            notify(`Could not open ${coin.symbol}`, readableError(error), undefined, "danger");
+          }
+        })();
         return;
       }
       const direction = side ?? coin.direction;
@@ -713,11 +1359,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
       addActivity({
         type: "trade",
         title: `${mode === "live" ? "Live" : "Opened"} ${coin.symbol} ${direction}`,
-        detail: `$${margin} margin at ${leverage}× on ${activeExchange.name}, entry ${coin.price.toLocaleString("en-US", { maximumFractionDigits: 4 })}, signal score ${coin.score}`,
+        detail: `$${margin} margin at ${leverage}A- on ${activeExchange.name}, entry ${coin.price.toLocaleString("en-US", { maximumFractionDigits: 4 })}, signal score ${coin.score}`,
       });
       notify(
         `${mode === "live" ? "Live order preview" : "Opened"} ${coin.symbol} ${direction}`,
-        `$${margin} margin at ${leverage}× on ${activeExchange.name}, TP1 ${tp1.toLocaleString("en-US", { maximumFractionDigits: 4 })}`,
+        `$${margin} margin at ${leverage}A- on ${activeExchange.name}, TP1 ${tp1.toLocaleString("en-US", { maximumFractionDigits: 4 })}`,
         {
           label: "Undo",
           onClick: () => {
@@ -731,17 +1377,38 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [
       activeExchange,
       addActivity,
+      dataSource,
       dismissToast,
       killSwitch,
       liveGuardrails.marginPerTrade,
       mode,
       notify,
+      refresh,
+      refreshTrades,
     ],
   );
 
   const closeAll = useCallback(() => {
     if (!positions.length) {
       notify("Nothing to close", "There are no open positions.", undefined, "info");
+      return;
+    }
+    if (dataSource === "live") {
+      void (async () => {
+        try {
+          await api.control("close-all");
+          await refresh();
+          await refreshTrades();
+          notify(
+            `Closed ${positions.length} position${positions.length === 1 ? "" : "s"}`,
+            "All open positions were closed and their protection orders cancelled.",
+            undefined,
+            "warn",
+          );
+        } catch (error) {
+          notify("Close all failed", readableError(error), undefined, "danger");
+        }
+      })();
       return;
     }
     const closed = positions.map((position, index) => {
@@ -786,9 +1453,34 @@ export function AppProvider({ children }: { children: ReactNode }) {
       },
       "warn",
     );
-  }, [addActivity, dismissToast, notify, positions]);
+  }, [addActivity, dataSource, dismissToast, notify, positions, refresh, refreshTrades]);
 
   const panicAll = useCallback(() => {
+    if (dataSource === "live") {
+      void (async () => {
+        try {
+          await api.panic();
+          await api.killSwitch(true);
+          setKillSwitchState(true);
+          await refresh();
+          await refreshTrades();
+          addActivity({
+            type: "risk",
+            title: "Panic executed",
+            detail: "All positions closed and the kill switch was activated.",
+          });
+          notify(
+            "Panic executed",
+            "All positions are closed and the kill switch is on. Live routing is stopped.",
+            undefined,
+            "danger",
+          );
+        } catch (error) {
+          notify("Panic request failed", readableError(error), undefined, "danger");
+        }
+      })();
+      return;
+    }
     closeAll();
     setKillSwitchState(true);
     addActivity({
@@ -802,9 +1494,27 @@ export function AppProvider({ children }: { children: ReactNode }) {
       undefined,
       "danger",
     );
-  }, [addActivity, closeAll, notify]);
+  }, [addActivity, closeAll, dataSource, notify, refresh, refreshTrades]);
 
   const resetSample = useCallback(() => {
+    if (dataSource === "live") {
+      void (async () => {
+        try {
+          await api.control("reset");
+          await refresh();
+          await refreshTrades();
+          notify(
+            "Account reset",
+            "Trades, positions, logs and the equity curve were cleared on the bot.",
+            undefined,
+            "warn",
+          );
+        } catch (error) {
+          notify("Reset failed", readableError(error), undefined, "danger");
+        }
+      })();
+      return;
+    }
     setPositions(clonePositions());
     setTrades(cloneTrades());
     setActivity(cloneActivity());
@@ -818,9 +1528,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
       undefined,
       "info",
     );
-  }, [notify]);
+  }, [dataSource, notify, refresh, refreshTrades]);
 
   const clearActivity = useCallback(() => {
+    activityClearedRef.current = Date.now();
     setActivity([]);
     notify("Activity cleared", "The live event view is empty. Settings and trades are unchanged.", undefined, "info");
   }, [notify]);
@@ -832,14 +1543,23 @@ export function AppProvider({ children }: { children: ReactNode }) {
       (sum, position) => sum + position.margin,
       0,
     );
+    if (dataSource === "live" && serverEquity !== null) {
+      return {
+        equity: serverEquity,
+        openPnlValue: open,
+        realised: realisedValue,
+        deployedMargin: deployed,
+        freeMargin: serverAvailable ?? serverEquity - deployed,
+      };
+    }
     return {
-      equity: START_FUND + realisedValue + open,
+      equity: initialFund + realisedValue + open,
       openPnlValue: open,
       realised: realisedValue,
       deployedMargin: deployed,
-      freeMargin: START_FUND + realisedValue - deployed,
+      freeMargin: initialFund + realisedValue - deployed,
     };
-  }, [positions, trades]);
+  }, [dataSource, initialFund, positions, serverAvailable, serverEquity, trades]);
 
   const series = useMemo<EquityPoint[]>(() => {
     if (baseSeries.length === 0) return baseSeries;
@@ -876,6 +1596,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     realised,
     deployedMargin,
     freeMargin,
+    initialFund,
     series,
     stats,
     drawdown,
@@ -901,18 +1622,28 @@ export function AppProvider({ children }: { children: ReactNode }) {
     activeExchange,
     setActiveExchange,
     connectExchange,
+    testExchange,
     disconnectExchange,
     exchangeWizardVenue,
     openExchangeWizard: setExchangeWizardVenue,
     closeExchangeWizard: () => setExchangeWizardVenue(null),
     liveGuardrails,
     updateLiveGuardrails,
+    saveLiveGuardrails,
     killSwitch,
     setKillSwitch,
     requestConfirm,
     confirmRequest,
     resolveConfirm,
     telemetry,
+    dataSource,
+    apiError,
+    settings,
+    refresh: refreshNow,
+    saveSettings,
+    setCoinglassKey,
+    exportBackup,
+    importBackup,
   };
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

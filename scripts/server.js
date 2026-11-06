@@ -26,6 +26,8 @@ const ROOT = path.resolve(__dirname, "..");
 const PUBLIC_DIR = path.join(ROOT, "public");
 const DATA_DIR = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : path.join(ROOT, "data");
 const DIST_DIR = path.join(ROOT, "dist");
+const DASHBOARD_DIR = path.join(DIST_DIR, "dashboard");
+const DASHBOARD_SRC_DIR = path.join(ROOT, "dashboard", "dist");
 const PORT = Number(process.env.PORT || 3000);
 const HOST = process.env.HOST || "127.0.0.1";
 
@@ -39,6 +41,9 @@ const MIME = {
   ".ico": "image/x-icon",
   ".woff2": "font/woff2",
 };
+
+const CSP =
+  "default-src 'self'; script-src 'self'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; connect-src 'self' https://capi.coinglass.com https://open-api-v4.coinglass.com https://contract.mexc.com https://api.gateio.ws https://api-futures.kucoin.com https://fapi.binance.com https://api.bybit.com https://api.bitget.com https://www.okx.com;";
 
 function sendJson(res, status, payload) {
   const body = JSON.stringify(payload);
@@ -115,6 +120,57 @@ function resolveStaticPath(rel) {
     return inPublic;
   }
   return null;
+}
+
+function dashboardRoot() {
+  if (fs.existsSync(path.join(DASHBOARD_DIR, "index.html"))) return DASHBOARD_DIR;
+  if (fs.existsSync(path.join(DASHBOARD_SRC_DIR, "index.html"))) return DASHBOARD_SRC_DIR;
+  return null;
+}
+
+async function serveDashboard(req, res, pathname) {
+  const root = dashboardRoot();
+  if (!root) {
+    sendText(
+      res,
+      404,
+      "React dashboard build not found. Run `npm run build:dashboard` or `npm run build`.",
+      "text/plain; charset=utf-8"
+    );
+    return;
+  }
+
+  let rel = pathname.replace(/^\/dashboard\/?/, "") || "index.html";
+  rel = decodeURIComponent(rel).replace(/\\/g, "/");
+
+  const full = path.resolve(root, rel);
+  const insideRoot =
+    full === root || full.startsWith(root.endsWith(path.sep) ? root : root + path.sep);
+
+  if (insideRoot && fs.existsSync(full) && fs.statSync(full).isFile()) {
+    const ext = path.extname(full).toLowerCase();
+    const immutable = rel.startsWith("assets/");
+    res.writeHead(200, {
+      "content-type": MIME[ext] || "application/octet-stream",
+      "cache-control": immutable
+        ? "public, max-age=31536000, immutable"
+        : "no-cache, must-revalidate",
+      "x-content-type-options": "nosniff",
+      "content-security-policy": CSP,
+    });
+    fs.createReadStream(full).pipe(res);
+    return;
+  }
+
+  // Client-side routing: every unknown /dashboard/* path renders the SPA.
+  const index = path.join(root, "index.html");
+  res.writeHead(200, {
+    "content-type": MIME[".html"],
+    "cache-control": "no-cache, must-revalidate",
+    "x-content-type-options": "nosniff",
+    "content-security-policy": CSP,
+  });
+  fs.createReadStream(index).pipe(res);
 }
 
 async function serveStatic(req, res, pathname) {
@@ -630,7 +686,11 @@ const server = http.createServer(async (req, res) => {
 
       if (method === "POST" && pathname === "/api/trade/open") {
         const body = await readBody(req);
-        const result = await engine.openManual(body?.symbol, { force: body?.force !== false });
+        const side = body?.side === "long" || body?.side === "short" ? body.side : null;
+        const result = await engine.openManual(body?.symbol, {
+          force: body?.force !== false,
+          side,
+        });
         return sendJson(res, result.ok ? 200 : 400, result);
       }
 
@@ -675,6 +735,9 @@ const server = http.createServer(async (req, res) => {
 
     if (method !== "GET" && method !== "HEAD") {
       return sendText(res, 405, "Method not allowed");
+    }
+    if (pathname === "/dashboard" || pathname.startsWith("/dashboard/")) {
+      return serveDashboard(req, res, pathname);
     }
     return serveStatic(req, res, pathname);
   } catch (err) {
