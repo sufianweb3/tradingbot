@@ -77,3 +77,49 @@ test("CoinGlass worker falls back to scraping when the official API rejects the 
   assert.equal(client.status.stopNewEntries, false);
   assert.equal(client.status.consecutiveFailures, 0);
 });
+
+test("CoinGlass worker falls back to the same-origin proxy when direct scraping is blocked", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+
+  globalThis.fetch = async (url, options = {}) => {
+    const href = String(url);
+    calls.push(href);
+    if (href.startsWith("https://capi.coinglass.com")) {
+      throw new Error("Failed to fetch");
+    }
+    if (href.startsWith("/api/coinglass/markets")) {
+      return new Response(
+        JSON.stringify({
+          list: [
+            {
+              symbol: "BTC",
+              price: 65000,
+              openInterest: 1000000,
+              volUsd: 500000,
+              m5OiChangePercent: 1.5,
+              h1VolChangePercent: 2.5,
+            },
+          ],
+          total: 1,
+        }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+    }
+    throw new Error(`unexpected url: ${href}`);
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const client = new CoinGlassWorkerClient();
+  const result = await client.fetchMarkets();
+
+  assert.equal(result.coins.length, 1);
+  assert.equal(result.coins[0].symbol, "BTC");
+  assert.equal(result.coins[0].oi["5m"], 1.5);
+  assert.equal(client.status.connected, true);
+  assert.equal(client.status.stopNewEntries, false);
+  assert.equal(client.status.lastError, null);
+  assert.ok(calls.some((href) => href.startsWith("/api/coinglass/markets?page=1")));
+});

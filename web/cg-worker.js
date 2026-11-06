@@ -9,6 +9,7 @@
 import { fetchCoinMarketsViaApi } from "../src/coinglass.js";
 
 const CAP = "https://capi.coinglass.com";
+const PROXY_PATH = "/api/coinglass/markets";
 const PAGE_SIZE = 100;
 const ASSET_TAG = "crypto";
 const ZERO_IV = new Uint8Array(16);
@@ -167,7 +168,7 @@ function normaliseCoin(c) {
   };
 }
 
-async function fetchPage(page) {
+async function fetchDirectPage(page) {
   const cacheTs = String(Date.now());
   const url =
     `${CAP}/api/home/v2/coinMarkets?sort=openInterest&order=desc&keyword=` +
@@ -200,6 +201,42 @@ async function fetchPage(page) {
     });
   }
   return outer?.data !== undefined ? outer.data : outer;
+}
+
+/**
+ * Same-origin fallback for browsers that block capi.coinglass.com
+ * (ad blockers, strict tracking protection, regional DNS blocks).
+ * The local Node server and the Vercel function at api/coinglass/markets.js
+ * decrypt the page server-side and return the same shape as fetchDirectPage().
+ */
+async function fetchProxyPage(page) {
+  const res = await fetch(`${PROXY_PATH}?page=${page}`, {
+    cache: "no-store",
+    credentials: "same-origin",
+    headers: { accept: "application/json" },
+  });
+  if (!res.ok) throw new Error(`CoinGlass proxy HTTP ${res.status}`);
+  const outer = await res.json();
+  if (outer && outer.ok === false) {
+    throw new Error(outer.error || "CoinGlass proxy error");
+  }
+  return outer?.data !== undefined ? outer.data : outer;
+}
+
+async function fetchPage(page) {
+  try {
+    return await fetchDirectPage(page);
+  } catch (directError) {
+    try {
+      return await fetchProxyPage(page);
+    } catch (proxyError) {
+      throw new Error(
+        `CoinGlass direct: ${directError?.message || directError}; proxy: ${
+          proxyError?.message || proxyError
+        }`
+      );
+    }
+  }
 }
 
 async function mapLimit(items, limit, fn) {
