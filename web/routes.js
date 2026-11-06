@@ -110,6 +110,22 @@ export async function handleRpcRequest({ path, method = "GET", body = {}, query 
       };
     }
 
+    case "/api/device/market": {
+      if (method !== "POST") return { status: 405, data: { ok: false, error: "method-not-allowed" } };
+      const result = engine.ingestDeviceFeed(body);
+      if (cgClient && result.ok) {
+        cgClient.status.lastSuccessAt = Date.now();
+        cgClient.status.connected = true;
+        cgClient.status.state = "connected";
+        cgClient.status.stale = false;
+        cgClient.status.stopNewEntries = false;
+        cgClient.status.consecutiveFailures = 0;
+        cgClient.status.coins = result.coins;
+        cgClient.status.source = "device";
+      }
+      return { status: result.ok ? 200 : 400, data: result };
+    }
+
     case "/api/config": {
       return {
         status: 200,

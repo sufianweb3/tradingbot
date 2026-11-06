@@ -92,25 +92,25 @@ export function deepMerge(...sources) {
 }
 
 export function iso(t) {
-  if (!t) return "—";
+  if (!t) return "--";
   try {
     return new Date(t).toISOString().replace("T", " ").replace(".000Z", "Z");
   } catch {
-    return "—";
+    return "--";
   }
 }
 
 export function shortTime(t) {
-  if (!t) return "—";
+  if (!t) return "--";
   try {
     return new Date(t).toLocaleTimeString("en-GB", { hour12: false });
   } catch {
-    return "—";
+    return "--";
   }
 }
 
 export function shortDateTime(t) {
-  if (!t) return "—";
+  if (!t) return "--";
   try {
     return new Date(t).toLocaleString("en-GB", {
       month: "short",
@@ -121,6 +121,6 @@ export function shortDateTime(t) {
       hour12: false,
     });
   } catch {
-    return "—";
+    return "--";
   }
 }

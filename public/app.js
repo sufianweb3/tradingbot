@@ -1,4 +1,4 @@
-/* OI Sniper dashboard — vanilla JS, no build step. */
+/* OI Sniper dashboard: vanilla JS, no build step. */
 
 import { fetchCoinMarkets, fetchTopMarkets, mergeTopRows } from "./cg-browser.js";
 import { initApi, api as localApi, takeOverEngine, onLiveTick, onStatusChange, isLeaderTab, APP_VERSION } from "./web/api.js";
@@ -106,7 +106,7 @@ const compact = (n) => {
 };
 const price = (n) => {
   const x = num(n);
-  if (!x) return "—";
+  if (!x) return "--";
   if (x >= 1000) return x.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   if (x >= 100) return x.toFixed(3);
   if (x >= 1) return x.toFixed(4);
@@ -120,21 +120,21 @@ const qty = (n) => {
   return x.toPrecision(4);
 };
 const time = (t) => {
-  if (!t) return "—";
+  if (!t) return "--";
   try {
     return new Date(t).toLocaleTimeString("en-GB", { hour12: false });
   } catch {
-    return "—";
+    return "--";
   }
 };
 const dateTime = (t) => {
-  if (!t) return "—";
+  if (!t) return "--";
   try {
     return new Date(t).toLocaleString("en-GB", {
       month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
     });
   } catch {
-    return "—";
+    return "--";
   }
 };
 const duration = (ms) => {
@@ -146,7 +146,7 @@ const duration = (ms) => {
 };
 const cls = (v) => (num(v) > 0 ? "pos" : num(v) < 0 ? "neg" : "");
 const ago = (ms) => {
-  if (ms === null || ms === undefined || !Number.isFinite(Number(ms))) return "—";
+  if (ms === null || ms === undefined || !Number.isFinite(Number(ms))) return "--";
   const s = Math.max(0, Math.round(Number(ms) / 1000));
   if (s < 1) return "just now";
   if (s < 60) return `${s}s ago`;
@@ -156,13 +156,41 @@ const ago = (ms) => {
   return `${h}h ${m % 60}m ago`;
 };
 
-const bannerRegistry = new Map(); // id -> { id, level: 'warn'|'danger'|'info', message, kind, actionText, actionFn }
+const BANNER_CONFIG = {
+  "kill-switch": { priority: 100, level: "danger" },
+  "worker-error": { priority: 95, level: "danger" },
+  "unsupported-browser": { priority: 90, level: "danger" },
+  "exchange-error": { priority: 80, level: "danger" },
+  "error": { priority: 75, level: "danger" },
+  "update-required": { priority: 65, level: "warn" },
+  "secondary": { priority: 62, level: "warn" },
+  "mexc-unavailable": { priority: 60, level: "warn" },
+  "offline": { priority: 50, level: "warn", category: "feed" },
+  "market-error": { priority: 48, level: "warn", category: "feed" },
+  "market-stale": { priority: 45, level: "warn", category: "feed" },
+  "stale": { priority: 40, level: "warn", category: "feed" },
+  "max-trades": { priority: 30, level: "warn" },
+  "no-margin": { priority: 25, level: "warn" },
+  "no-filters": { priority: 20, level: "info" },
+  "throttled": { priority: 15, level: "info" },
+  "tab-hidden": { priority: 10, level: "info" },
+  "wake-lock": { priority: 5, level: "info" },
+};
+
+const bannerRegistry = new Map(); // id -> { id, priority, category, level, message, kind, actionText, actionFn }
 
 function setBanner(id, bannerData) {
   if (!bannerData) {
     bannerRegistry.delete(id);
   } else {
-    bannerRegistry.set(id, { id, ...bannerData });
+    const config = BANNER_CONFIG[id] || {};
+    bannerRegistry.set(id, {
+      id,
+      priority: config.priority ?? 10,
+      category: config.category,
+      level: bannerData.level || config.level || "warn",
+      ...bannerData,
+    });
   }
   renderServerNotice();
 }
@@ -178,11 +206,16 @@ function setNotice(notice) {
   activeNotice = notice;
   if (!notice) {
     bannerRegistry.delete("general");
+    bannerRegistry.delete("error");
   } else {
-    const level = notice.kind === "error" || notice.kind === "kill-switch" ? "danger" : "warn";
-    bannerRegistry.set(notice.kind || "general", {
-      id: notice.kind || "general",
-      level: notice.level || level,
+    const id = notice.kind || "general";
+    const config = BANNER_CONFIG[id] || {};
+    const level = notice.level || (notice.kind === "error" || notice.kind === "kill-switch" ? "danger" : (config.level || "warn"));
+    bannerRegistry.set(id, {
+      id,
+      priority: config.priority ?? 75,
+      category: config.category,
+      level,
       message: notice.message,
       kind: notice.kind,
     });
@@ -206,40 +239,112 @@ function renderServerNotice() {
     el.innerHTML = "";
     return;
   }
+
+  const isRunning = Boolean(state.meta?.running);
+
+  // Filter banners
+  let candidateBanners = [...bannerRegistry.values()].filter((banner) => {
+    // When bot is stopped/paused, suppress entry-paused warning banners for feed staleness
+    if (!isRunning && banner.category === "feed") {
+      return false;
+    }
+    return true;
+  });
+
+  if (candidateBanners.length === 0) {
+    el.classList.add("hidden");
+    el.innerHTML = "";
+    return;
+  }
+
+  // If multiple feed alerts exist, keep only the single highest priority one
+  const feedAlerts = candidateBanners.filter((b) => b.category === "feed");
+  if (feedAlerts.length > 1) {
+    feedAlerts.sort((a, b) => (b.priority || 0) - (a.priority || 0));
+    const highestFeed = feedAlerts[0];
+    candidateBanners = candidateBanners.filter((b) => b.category !== "feed" || b.id === highestFeed.id);
+  }
+
+  // Sort descending by priority
+  candidateBanners.sort((a, b) => (b.priority || 0) - (a.priority || 0));
+
+  const banner = candidateBanners[0];
+  if (!banner) {
+    el.classList.add("hidden");
+    el.innerHTML = "";
+    return;
+  }
+
   el.classList.remove("hidden");
   el.innerHTML = "";
 
-  for (const [id, banner] of bannerRegistry.entries()) {
-    const item = document.createElement("div");
-    item.className = `banner-item ${banner.level || "warn"}`;
-    item.dataset.bannerId = id;
+  const item = document.createElement("div");
+  item.className = `banner-item ${banner.level || "warn"}`;
+  item.dataset.bannerId = banner.id;
 
-    const msgSpan = document.createElement("span");
-    msgSpan.innerHTML = esc(banner.message);
-    item.appendChild(msgSpan);
+  const msgSpan = document.createElement("span");
+  msgSpan.innerHTML = esc(banner.message);
+  item.appendChild(msgSpan);
 
-    if (id === "secondary" || banner.kind === "secondary") {
-      const btn = document.createElement("button");
-      btn.className = "btn small";
-      btn.style.marginLeft = "10px";
-      btn.textContent = "Take Over Engine";
-      btn.onclick = async () => {
-        btn.disabled = true;
-        btn.textContent = "Taking over...";
-        await takeOverEngine();
-      };
-      item.appendChild(btn);
-    } else if (banner.actionText && typeof banner.actionFn === "function") {
-      const btn = document.createElement("button");
-      btn.className = "btn small ghost";
-      btn.style.marginLeft = "10px";
-      btn.textContent = banner.actionText;
-      btn.onclick = banner.actionFn;
-      item.appendChild(btn);
-    }
-
-    el.appendChild(item);
+  if (candidateBanners.length > 1) {
+    const badge = document.createElement("span");
+    badge.className = "banner-sub-count";
+    badge.style.marginLeft = "8px";
+    badge.style.fontSize = "10.5px";
+    badge.style.opacity = "0.75";
+    badge.style.fontFamily = "var(--mono)";
+    badge.textContent = `(+${candidateBanners.length - 1} more)`;
+    msgSpan.appendChild(badge);
   }
+
+  if (banner.id === "secondary" || banner.kind === "secondary") {
+    const btn = document.createElement("button");
+    btn.className = "btn small";
+    btn.style.marginLeft = "10px";
+    btn.textContent = "Take Over Engine";
+    btn.onclick = async () => {
+      btn.disabled = true;
+      btn.textContent = "Taking over...";
+      await takeOverEngine();
+    };
+    item.appendChild(btn);
+  } else if (banner.actionText && typeof banner.actionFn === "function") {
+    const btn = document.createElement("button");
+    btn.className = "btn small ghost";
+    btn.style.marginLeft = "10px";
+    btn.textContent = banner.actionText;
+    btn.onclick = banner.actionFn;
+    item.appendChild(btn);
+  }
+
+  el.appendChild(item);
+}
+
+function normalizeCoinSymbol(sym) {
+  if (!sym) return "";
+  let s = String(sym).trim().toLowerCase();
+  s = s.replace(/[-_/]?(perp|swap)$/i, "");
+  s = s.replace(/[-_/]?(usdt|usdc|usd|busd)$/i, "");
+  s = s.replace(/^(1000000|100000|10000|1000|100|k)([a-z]+)$/i, "$2");
+  s = s.replace(/[^a-z0-9]/g, "");
+  return s || String(sym).trim().toLowerCase();
+}
+
+function getCoinInitials(sym) {
+  const norm = normalizeCoinSymbol(sym).toUpperCase();
+  const raw = String(sym || "").replace(/[^a-zA-Z0-9]/g, "").toUpperCase();
+  const target = norm || raw;
+  return target.slice(0, 2) || "??";
+}
+
+function renderCoinBadge(symbol, rawLogo) {
+  const norm = normalizeCoinSymbol(symbol);
+  const initials = getCoinInitials(symbol);
+  const src = rawLogo || (norm ? `https://assets.coincap.io/assets/icons/${norm}@2x.png` : "");
+  if (!src) {
+    return `<span class="coin-badge-wrap"><span class="coin-fallback" aria-hidden="true">${esc(initials)}</span></span>`;
+  }
+  return `<span class="coin-badge-wrap"><img class="coin-logo" src="${esc(src)}" alt="${esc(symbol)}" loading="lazy" width="20" height="20" onerror="this.style.display='none';if(this.nextElementSibling)this.nextElementSibling.style.display='inline-flex';"><span class="coin-fallback" style="display:none" aria-hidden="true">${esc(initials)}</span></span>`;
 }
 
 function clearServerError() {
@@ -284,8 +389,8 @@ function buildFilterRows(container, list, group) {
           <option value=">=" ${f.op !== "<=" ? "selected" : ""}>≥</option>
           <option value="<=" ${f.op === "<=" ? "selected" : ""}>≤</option>
         </select>
-        <input type="number" step="0.01" data-f="threshold" value="${f.threshold ?? ""}" placeholder="—">
-        <span class="cur" data-cur="${group}.${f.key}">–</span>
+        <input type="number" step="0.01" data-f="threshold" value="${f.threshold ?? ""}" placeholder="--">
+        <span class="cur" data-cur="${group}.${f.key}">--</span>
       </div>`;
     })
     .join("");
@@ -418,7 +523,8 @@ function collectSettings() {
 
 function setDirty(dirty) {
   state.dirty = dirty;
-  $("#dirtyBadge").classList.toggle("hidden", !dirty);
+  $("#dirtyBadge")?.classList.toggle("hidden", !dirty);
+  $("#dirtyDot")?.classList.toggle("hidden", !dirty);
 }
 
 function updateVisibility() {
@@ -562,12 +668,12 @@ function renderStatus() {
   const total = m.marketTotal || 0;
   $("#feedFoot").textContent = state.venues
     ? `${state.venues.okVenues}/${state.venues.totalVenues} feeds · ${(state.venues.instruments || 0).toLocaleString()} instruments`
-    : "—";
+    : "--";
   renderBanner();
   renderCountdown();
 }
 
-/* ------------------------------------------------------------------ */
+/* CoinGlass feed */
 /* CoinGlass connection + live feed                                   */
 /* ------------------------------------------------------------------ */
 const CG_SORT_LABEL = {
@@ -722,20 +828,21 @@ function renderCoinGlassTable() {
   const limit = 100;
   const shown = rows.slice(0, limit);
   if (!all.length) {
-    body.innerHTML = `<tr><td colspan="3" class="empty-row"><b>Waiting for CoinGlass data…</b>The bot is contacting capi.coinglass.com.</td></tr>`;
+    body.innerHTML = `<tr><td colspan="3" class="empty-row"><b>Waiting for CoinGlass data…</b><p class="empty-desc">The bot is contacting capi.coinglass.com.</p></td></tr>`;
     if (foot) foot.textContent = "No rows yet";
   } else if (!shown.length) {
-    body.innerHTML = `<tr><td colspan="3" class="empty-row"><b>No matching coins</b>Try a different search.</td></tr>`;
+    body.innerHTML = `<tr><td colspan="3" class="empty-row"><b>No matching coins</b><p class="empty-desc">Try a different search.</p></td></tr>`;
     if (foot) foot.textContent = `0 of ${rows.length} coins`;
   } else {
     body.innerHTML = shown
       .map((m) => {
         const oi = m.oi?.["5m"];
         const vol = m.vol?.["1h"];
+        const logo = renderCoinBadge(m.symbol, m.logo);
         return `<tr>
-          <td><div class="coin-cell"><div class="coin-name">${esc(m.symbol)}<small>${esc(m.name || "")}</small></div></div></td>
-          <td class="num ${oi === null || oi === undefined ? "" : cls(oi)}">${oi === null || oi === undefined ? "—" : pct(oi)}</td>
-          <td class="num ${vol === null || vol === undefined ? "" : cls(vol)}">${vol === null || vol === undefined ? "—" : pct(vol)}</td>
+          <td><div class="coin-cell">${logo}<div class="coin-name">${esc(m.symbol)}<small>${esc(m.name || "")}</small></div></div></td>
+          <td class="num ${oi === null || oi === undefined ? "" : cls(oi)}">${oi === null || oi === undefined ? "--" : pct(oi)}</td>
+          <td class="num ${vol === null || vol === undefined ? "" : cls(vol)}">${vol === null || vol === undefined ? "--" : pct(vol)}</td>
         </tr>`;
       })
       .join("");
@@ -753,25 +860,41 @@ function renderCoinGlassTable() {
 function renderBanner() {
   const m = state.meta || {};
   const s = state.stats || {};
-  let text = "";
-  let warn = false;
+
   if (m.stopReason === "max-trades") {
-    text = `Max trades reached (${m.maxTrades}). Download the report, then reset the strategy to run another batch.`;
-    warn = true;
-  } else if (!m.filtersConfigured && state.loaded) {
-    text = "No filter is configured. Enable at least one OI or Volume row and enter a threshold to start scanning.";
-  } else if (m.marketError) {
-    text = `CoinGlass feed error: ${m.marketError}`;
-    warn = true;
-  } else if (m.marketAgeMs && m.marketAgeMs > 180000) {
-    text = "Market data is more than 3 minutes old. New trades are paused until the feed recovers.";
-    warn = true;
-  } else if (m.running && s.available !== undefined && s.available < 1 && s.openTrades > 0) {
-    text = "No free margin left. New signals will wait until a position closes.";
+    setBanner("max-trades", { level: "warn", message: `Max trades reached (${m.maxTrades}). Download the report, then reset the strategy to run another batch.` });
+  } else {
+    clearBanner("max-trades");
   }
-  $("#banner").classList.toggle("hidden", !text);
-  $("#banner").classList.toggle("warn", warn);
-  $("#bannerText").textContent = text;
+
+  if (!m.filtersConfigured && state.loaded) {
+    setBanner("no-filters", { level: "info", message: "No filter is configured. Enable at least one OI or Volume row and enter a threshold to start scanning." });
+  } else {
+    clearBanner("no-filters");
+  }
+
+  if (m.marketError) {
+    setBanner("market-error", { level: "warn", message: `CoinGlass feed error: ${m.marketError}` });
+  } else {
+    clearBanner("market-error");
+  }
+
+  if (m.marketAgeMs && m.marketAgeMs > 180000) {
+    setBanner("market-stale", { level: "warn", message: "Market data is more than 3 minutes old. New trades are paused until the feed recovers." });
+  } else {
+    clearBanner("market-stale");
+  }
+
+  if (m.running && s.available !== undefined && s.available < 1 && s.openTrades > 0) {
+    setBanner("no-margin", { level: "warn", message: "No free margin left. New signals will wait until a position closes." });
+  } else {
+    clearBanner("no-margin");
+  }
+
+  const legacyBanner = $("#banner");
+  if (legacyBanner) {
+    legacyBanner.classList.add("hidden");
+  }
 }
 
 function renderKpis() {
@@ -796,7 +919,7 @@ function renderKpis() {
   $("#kpiWinrateSub").textContent = `${s.wins || 0}W / ${s.losses || 0}L`;
 
   const pf = s.profitFactor === null || s.profitFactor === undefined
-    ? (s.grossProfit > 0 ? "∞" : "—")
+    ? (s.grossProfit > 0 ? "∞" : "--")
     : num(s.profitFactor).toFixed(2);
   set("#kpiPf", pf, s.profitFactor !== null && s.profitFactor >= 1 ? "pos" : s.profitFactor !== null ? "neg" : "");
   $("#kpiPfSub").textContent = `${money(s.grossProfit)} / ${money(s.grossLoss)}`;
@@ -828,9 +951,7 @@ function renderPositions() {
   box.innerHTML = list
     .map((p) => {
       const win = num(p.roe) >= 0;
-      const logo = p.symbol
-        ? `<span class="coin-fallback">${esc(p.symbol.slice(0, 2))}</span>`
-        : "";
+      const logo = p.symbol ? renderCoinBadge(p.symbol) : "";
       return `<article class="position-card ${win ? "win" : "loss"}">
         <div class="pc-head">
           <div class="pc-symbol">${logo}<span>${esc(p.symbol)}</span><span class="side-tag ${esc(p.side)}">${esc(p.side)}</span>${p.tp1Hit ? '<span class="tp1-hit">TP1</span>' : ""}</div>
@@ -869,7 +990,7 @@ function cellValue(group, key, value) {
   const f = filterFor(group, key);
   const active = f && f.enabled && f.threshold !== null && f.threshold !== undefined;
   if (value === null || value === undefined) {
-    return `<td class="num"><span class="val na">—</span></td>`;
+    return `<td class="num"><span class="val na">--</span></td>`;
   }
   if (!active) {
     return `<td class="num"><span class="val off">${pct(value)}</span></td>`;
@@ -952,8 +1073,8 @@ function renderMarkets() {
   renderMarketTabs();
 
   if (!all.length) {
-    tbody.innerHTML = `<tr><td colspan="12" class="empty-row"><b>Loading CoinGlass data…</b>The first scan downloads the full market table.</td></tr>`;
-    $("#marketFoot").textContent = "—";
+    tbody.innerHTML = `<tr><td colspan="12" class="empty-row"><b>Loading CoinGlass data…</b><p class="empty-desc">The first scan downloads the full market table.</p></td></tr>`;
+    $("#marketFoot").textContent = "--";
     return;
   }
 
@@ -976,13 +1097,11 @@ function renderMarkets() {
     } else {
       msg = "No coins match this search.";
     }
-    tbody.innerHTML = `<tr><td colspan="12" class="empty-row"><b>Nothing here yet</b>${esc(msg)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="12" class="empty-row"><b>Nothing here yet</b><p class="empty-desc">${esc(msg)}</p></td></tr>`;
   } else {
     tbody.innerHTML = shown
       .map((m) => {
-        const logo = m.logo
-          ? `<img class="coin-logo" src="${esc(m.logo)}" alt="" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='grid'"><span class="coin-fallback" style="display:none">${esc(m.symbol.slice(0, 2))}</span>`
-          : `<span class="coin-fallback">${esc(m.symbol.slice(0, 2))}</span>`;
+        const logo = renderCoinBadge(m.symbol, m.logo);
         const openCount = num(m.openCount, m.open ? 1 : 0);
         const perCoin = Math.max(1, num(m.maxPerCoin, 1));
         const roomForMore = openCount < perCoin;
@@ -1072,7 +1191,7 @@ function renderMarketMax() {
       if (best === null || v > best) best = v;
     }
     if (best === null) {
-      el.textContent = "–";
+      el.textContent = "--";
       el.className = "cur";
     } else {
       el.textContent = pct(best);
@@ -1095,8 +1214,8 @@ function renderTrades() {
   $("#btnLoadMore").classList.toggle("hidden", state.trades.length >= (state.tradesTotal || 0));
 
   if (!list.length) {
-    tbody.innerHTML = `<tr><td colspan="12" class="empty-row"><b>No closed trades yet</b>A trade appears here after it hits SL, TP or you close it manually.</td></tr>`;
-    $("#tradesFoot").textContent = "—";
+    tbody.innerHTML = `<tr><td colspan="12" class="empty-row"><b>No closed trades yet</b><p class="empty-desc">A trade appears here after it hits SL, TP or you close it manually.</p></td></tr>`;
+    $("#tradesFoot").textContent = "--";
     return;
   }
 
@@ -1114,9 +1233,9 @@ function renderTrades() {
         <td class="num mono ${win ? "pos" : "neg"}">${signedMoney(t.pnlNet)}</td>
         <td class="num mono ${num(t.roe) >= 0 ? "pos" : "neg"}">${pct(t.roe)}</td>
         <td class="num mono subtle">${money(t.feesPaid)}</td>
-        <td><span class="venue-tag" title="${parts} partial exit(s)">${esc(t.exitReason || "—")}${parts > 1 ? ` · ${parts}` : ""}</span></td>
+        <td><span class="venue-tag" title="${parts} partial exit(s)">${esc(t.exitReason || "--")}${parts > 1 ? ` · ${parts}` : ""}</span></td>
         <td class="num subtle">${duration(t.durationMs)}</td>
-        <td class="subtle">${esc(t.venueName || t.venue || "—")}</td>
+        <td class="subtle">${esc(t.venueName || t.venue || "--")}</td>
       </tr>`;
     })
     .join("");
@@ -1571,9 +1690,7 @@ async function refreshDashboard() {
   }
 }
 
-/* ------------------------------------------------------------------ */
-/* Device feed — this browser scrapes CoinGlass and pushes it up       */
-/* ------------------------------------------------------------------ */
+/* Device feed: browser scrapes CoinGlass and pushes data to engine */
 const DEVICE_FAST_MS = 700;
 const DEVICE_FULL_MS = 30000;
 // One POST every 5s keeps the engine fresh without burning the DO quota
@@ -1780,7 +1897,7 @@ function startDeviceFeed() {
   startLeaderHeartbeat();
   renderDeviceBadge();
   if (!deviceModeActive()) return;
-  // Called on page load and on Start — never stack duplicate scrape loops.
+  // Called on page load and on Start; avoid duplicate scrape loops.
   if (deviceFeedStarted) return;
   deviceFeedStarted = true;
   deviceFullTick();
@@ -2136,9 +2253,9 @@ function loop(fn, ms) {
 }
 
 /**
- * Same as loop() but keeps running in a hidden tab. The browser throttles
- * background timers, so this cannot guarantee a rate — it just does not stop
- * on purpose. The engine accepts a device feed up to 90s old for this reason.
+ * Same as loop() but keeps running in a hidden tab. Browser throttles
+ * background timers, so this cannot guarantee an exact rate: it does not stop
+ * on purpose. The engine accepts a device feed up to 90s old.
  */
 function deviceLoop(fn, ms) {
   let stopped = false;
@@ -2283,7 +2400,61 @@ export const notificationManager = {
 
 /* ------------------------------------------------------------------ */
 /* 3-Step First-Run Onboarding Controller                             */
-/* ------------------------------------------------------------------ */
+export function setupSettingsToggle() {
+  const btnToggle = $("#btnToggleSettings");
+  const btnClose = $("#btnCloseSettings");
+  const layout = $(".layout");
+  if (!layout) return;
+
+  const setCollapsed = (collapsed) => {
+    layout.classList.toggle("settings-collapsed", collapsed);
+    localStorage.setItem("oi_sniper_settings_closed", collapsed ? "1" : "0");
+    if (btnToggle) {
+      btnToggle.classList.toggle("active", !collapsed);
+    }
+  };
+
+  btnToggle?.addEventListener("click", () => {
+    setCollapsed(!layout.classList.contains("settings-collapsed"));
+  });
+
+  btnClose?.addEventListener("click", () => {
+    setCollapsed(true);
+  });
+
+  const btnToggleAll = $("#btnToggleAllSettings");
+  btnToggleAll?.addEventListener("click", () => {
+    const groups = document.querySelectorAll(".settings-body details.setting-group");
+    const anyClosed = [...groups].some((g) => !g.open);
+    groups.forEach((g) => {
+      g.open = anyClosed;
+    });
+    btnToggleAll.textContent = anyClosed ? "Collapse all" : "Expand all";
+  });
+
+  const saved = localStorage.getItem("oi_sniper_settings_closed");
+  if (saved === "1" || (saved === null && window.innerWidth < 1400)) {
+    layout.classList.add("settings-collapsed");
+    btnToggle?.classList.remove("active");
+  } else {
+    layout.classList.remove("settings-collapsed");
+    btnToggle?.classList.add("active");
+  }
+}
+
+export function setupWorkspaceTabs() {
+  const bar = $("#workspaceTabs");
+  const content = $("main.content");
+  if (!bar || !content) return;
+  bar.addEventListener("click", (e) => {
+    const tab = e.target.closest(".ws-tab");
+    if (!tab) return;
+    bar.querySelectorAll(".ws-tab").forEach((t) => t.classList.remove("active"));
+    tab.classList.add("active");
+    content.dataset.activeView = tab.dataset.view || "overview";
+  });
+}
+
 export function setupOnboarding() {
   const modal = $("#onboardingModal");
   if (!modal) return;
@@ -2856,8 +3027,10 @@ onLiveTick((tick) => {
 
   notificationManager.handlePositions(tick.positions || state.positions);
   if (tick.running !== undefined) {
+    if (state.meta) state.meta.running = tick.running;
     notificationManager.handleRunningState(tick.running, tick.meta?.stopReason || state.meta?.stopReason);
   }
+  renderServerNotice();
 
   if (!isLeaderTab()) {
     if (tick.stats) state.stats = tick.stats;
@@ -2926,6 +3099,8 @@ onStatusChange((status) => {
 initApi().then(() => {
   loadBootstrap().then(() => {
     notificationManager.init();
+    setupSettingsToggle();
+    setupWorkspaceTabs();
     setupOnboarding();
     setupBackupUi();
     setupExchangeUi();

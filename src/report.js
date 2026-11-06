@@ -118,7 +118,7 @@ function filterRows(settings) {
       (r) => `<tr>
         <td>${escapeHtml(r.label)}</td>
         <td>${r.enabled ? `<span class="pill on">ON</span>` : `<span class="pill off">OFF</span>`}</td>
-        <td>${r.enabled ? `${escapeHtml(r.op)} ${toNum(r.threshold).toFixed(2)}%` : "—"}</td>
+        <td>${r.enabled ? `${escapeHtml(r.op)} ${toNum(r.threshold).toFixed(2)}%` : "--"}</td>
       </tr>`
     )
     .join("");
@@ -135,7 +135,7 @@ function tradeRows(trades) {
       <td class="mono">${escapeHtml(iso(t.exitTime))}</td>
       <td><strong>${escapeHtml(t.symbol)}</strong></td>
       <td><span class="side ${t.side}">${escapeHtml(t.side)}</span></td>
-      <td class="mono">${escapeHtml(t.venueName || t.venue || "—")}</td>
+      <td class="mono">${escapeHtml(t.venueName || t.venue || "--")}</td>
       <td class="mono">${toNum(t.entryPrice).toPrecision(6)}</td>
       <td class="mono">${toNum(t.exitPrice ?? t.exitPriceAvg).toPrecision(6)}</td>
       <td class="mono">${money(t.margin)}</td>
@@ -143,7 +143,7 @@ function tradeRows(trades) {
       <td class="mono ${win ? "pos" : "neg"}">${money(t.pnlNet)}</td>
       <td class="mono ${win ? "pos" : "neg"}">${pct(t.roe)}</td>
       <td class="mono">${money(t.feesPaid)}</td>
-      <td>${escapeHtml(t.exitReason || "—")}</td>
+      <td>${escapeHtml(t.exitReason || "--")}</td>
     </tr>`;
     })
     .join("");
@@ -182,7 +182,7 @@ export function renderReport(data) {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>OI Sniper — Strategy Report</title>
+<title>OI Sniper: Strategy Report</title>
 <style>
   :root{--ink:#0f172a;--muted:#64748b;--line:#e2e8f0;--bg:#f6f8fb;--card:#fff;--green:#0f9d76;--red:#d9485f;--amber:#b7791f}
   *{box-sizing:border-box}

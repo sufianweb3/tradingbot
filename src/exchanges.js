@@ -445,7 +445,7 @@ export class ExchangeHub {
       return {
         ...s,
         ageMs: s.updatedAt ? now() - s.updatedAt : null,
-        updatedText: s.updatedAt ? iso(s.updatedAt) : "—",
+        updatedText: s.updatedAt ? iso(s.updatedAt) : "--",
       };
     });
   }

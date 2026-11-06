@@ -42,41 +42,87 @@
     </div>
 
     <div class="top-actions">
-      <button id="btnExchangeConnect" class="btn ghost" type="button">Connect exchange</button>
-      <button id="btnToggle" class="btn primary" type="button"><span id="toggleIcon" aria-hidden="true">▶</span> <span id="toggleText">Start bot</span></button>
-      <button id="btnScan" class="btn" type="button">Scan now</button>
-      <button id="btnKillSwitch" class="btn danger-ghost" type="button" title="Stop opening new positions">Kill switch</button>
-      <button id="btnPanic" class="btn danger hidden" type="button" title="Panic: Close all positions & cancel all orders">Panic</button>
-      <button id="btnReport" class="btn" type="button">Report</button>
-      <a id="btnCsv" class="btn ghost" href="/api/report?format=csv&download=1">CSV</a>
-      <button id="btnReset" class="btn danger-ghost" type="button">Reset</button>
+      <div class="action-cluster primary-cluster">
+        <button id="btnToggle" class="btn primary" type="button"><span id="toggleIcon" aria-hidden="true">▶</span> <span id="toggleText">Start bot</span></button>
+        <button id="btnScan" class="btn" type="button">Scan now</button>
+      </div>
+      <div class="action-cluster util-cluster">
+        <button id="btnToggleSettings" class="btn ghost active" type="button" title="Toggle Strategy Settings panel"><span aria-hidden="true">⚙</span> <span>Settings</span><span id="dirtyDot" class="dirty-dot hidden"></span></button>
+        <button id="btnExchangeConnect" class="btn ghost" type="button">Exchange</button>
+        <button id="btnReport" class="btn ghost" type="button">Report</button>
+        <a id="btnCsv" class="btn ghost" href="/api/report?format=csv&download=1">CSV</a>
+      </div>
+      <div class="action-cluster danger-cluster">
+        <button id="btnKillSwitch" class="btn danger-ghost" type="button" title="Stop opening new positions">Kill switch</button>
+        <button id="btnPanic" class="btn danger hidden" type="button" title="Panic: Close all positions & cancel all orders">Panic</button>
+        <button id="btnReset" class="btn danger-ghost" type="button">Reset</button>
+      </div>
     </div>
   </header>
 
   <section class="kpis" id="kpis">
-    <article class="kpi accent-green"><div class="kpi-label">Equity</div><div class="kpi-value" id="kpiEquity">$0.00</div><div class="kpi-sub" id="kpiEquitySub">start $0.00</div></article>
-    <article class="kpi accent-blue"><div class="kpi-label">Total P/L</div><div class="kpi-value" id="kpiPnl">$0.00</div><div class="kpi-sub" id="kpiPnlSub">0.00% return</div></article>
-    <article class="kpi accent-amber"><div class="kpi-label">Open P/L</div><div class="kpi-value" id="kpiOpen">$0.00</div><div class="kpi-sub" id="kpiOpenSub">0 positions</div></article>
-    <article class="kpi"><div class="kpi-label">Win rate</div><div class="kpi-value" id="kpiWinrate">0%</div><div class="kpi-sub" id="kpiWinrateSub">0W / 0L</div></article>
-    <article class="kpi"><div class="kpi-label">Profit factor</div><div class="kpi-value" id="kpiPf">—</div><div class="kpi-sub" id="kpiPfSub">no closed trades</div></article>
-    <article class="kpi"><div class="kpi-label">Max drawdown</div><div class="kpi-value" id="kpiDd">$0.00</div><div class="kpi-sub" id="kpiDdSub">0.00%</div></article>
-    <article class="kpi"><div class="kpi-label">Trades</div><div class="kpi-value" id="kpiTrades">0</div><div class="kpi-sub" id="kpiTradesSub">unlimited</div></article>
-    <article class="kpi"><div class="kpi-label">Fees</div><div class="kpi-value" id="kpiFees">$0.00</div><div class="kpi-sub" id="kpiFeesSub">incl. open</div></article>
-  </section>
+    <div class="kpi-group capital-group">
+      <article class="kpi kpi-hero accent-green">
+        <div class="kpi-head"><span class="kpi-label">Account Equity</span></div>
+        <div class="kpi-value hero-val" id="kpiEquity">$0.00</div>
+        <div class="kpi-sub" id="kpiEquitySub">start $0.00</div>
+      </article>
+      <article class="kpi accent-blue">
+        <div class="kpi-head"><span class="kpi-label">Total Net P/L</span></div>
+        <div class="kpi-value" id="kpiPnl">$0.00</div>
+        <div class="kpi-sub" id="kpiPnlSub">0.00% return</div>
+      </article>
+      <article class="kpi accent-amber">
+        <div class="kpi-head"><span class="kpi-label">Open Unrealized</span></div>
+        <div class="kpi-value" id="kpiOpen">$0.00</div>
+        <div class="kpi-sub" id="kpiOpenSub">0 positions</div>
+      </article>
+    </div>
 
-  <div id="banner" class="banner hidden">
-    <span class="banner-icon">!</span>
-    <div id="bannerText"></div>
-  </div>
+    <div class="kpi-group perf-group">
+      <article class="kpi">
+        <div class="kpi-head"><span class="kpi-label">Win Rate</span></div>
+        <div class="kpi-value" id="kpiWinrate">0%</div>
+        <div class="kpi-sub" id="kpiWinrateSub">0W / 0L</div>
+      </article>
+      <article class="kpi">
+        <div class="kpi-head"><span class="kpi-label">Profit Factor</span></div>
+        <div class="kpi-value" id="kpiPf">--</div>
+        <div class="kpi-sub" id="kpiPfSub">no closed trades</div>
+      </article>
+      <article class="kpi">
+        <div class="kpi-head"><span class="kpi-label">Max Drawdown</span></div>
+        <div class="kpi-value" id="kpiDd">$0.00</div>
+        <div class="kpi-sub" id="kpiDdSub">0.00%</div>
+      </article>
+    </div>
+
+    <div class="kpi-group volume-group">
+      <article class="kpi">
+        <div class="kpi-head"><span class="kpi-label">Closed Trades</span></div>
+        <div class="kpi-value" id="kpiTrades">0</div>
+        <div class="kpi-sub" id="kpiTradesSub">unlimited</div>
+      </article>
+      <article class="kpi">
+        <div class="kpi-head"><span class="kpi-label">Total Fees</span></div>
+        <div class="kpi-value" id="kpiFees">$0.00</div>
+        <div class="kpi-sub" id="kpiFeesSub">incl. open</div>
+      </article>
+    </div>
+  </section>
 
   <div class="layout">
     <aside class="panel settings-panel">
       <div class="panel-head sticky">
         <div>
           <h2>Strategy settings</h2>
-          <p class="panel-sub">Saved locally in your browser storage</p>
+          <p class="panel-sub">Local storage configuration</p>
         </div>
-        <span id="dirtyBadge" class="dirty hidden">unsaved</span>
+        <div style="display:flex; align-items:center; gap:8px;">
+          <span id="dirtyBadge" class="dirty hidden">unsaved</span>
+          <button id="btnToggleAllSettings" class="btn small ghost" type="button" title="Expand or collapse all sections">Expand all</button>
+          <button id="btnCloseSettings" class="btn small ghost" type="button" title="Close settings rail" aria-label="Close settings">✕</button>
+        </div>
       </div>
 
       <div class="panel-body settings-body">
@@ -92,8 +138,8 @@
           </label>
         </div>
 
-        <section class="setting-group">
-          <div class="group-head"><h3>Profile sizing</h3><span class="hint">Capital allocation for this profile</span></div>
+        <details class="setting-group" open>
+          <summary class="group-head"><h3>Profile sizing</h3><span class="hint">Capital allocation for this profile</span></summary>
           <div class="field-grid">
             <label class="field"><span>Leverage</span><input type="number" min="1" max="200" step="1" data-profile-setting="leverage"></label>
             <label class="field"><span>Position sizing</span>
@@ -111,10 +157,10 @@
             <label class="field" data-show="fixedQty"><span>Quantity per trade</span><input type="number" min="0" step="any" data-profile-setting="fixedQty"></label>
           </div>
           <p class="note" id="sizingNote"></p>
-        </section>
+        </details>
 
-        <section class="setting-group">
-          <div class="group-head"><h3>Profile exit plan</h3><span class="hint">SL / TP in ROE (% of margin)</span></div>
+        <details class="setting-group" open>
+          <summary class="group-head"><h3>Profile exit plan</h3><span class="hint">SL / TP in ROE (% of margin)</span></summary>
           <div class="field-grid">
             <label class="field"><span>Stop loss %</span><input type="number" min="0.01" step="0.05" data-profile-setting="slPercent"></label>
             <label class="field"><span>TP1 %</span><input type="number" min="0.01" step="0.05" data-profile-setting="tp1Percent"></label>
@@ -126,51 +172,51 @@
             <label class="switch-row"><span class="switch"><input type="checkbox" data-profile-setting="trailingEnabled"><i></i></span><span>Trailing stop</span></label>
             <label class="field inline"><span>Trail starts</span><select data-profile-setting="trailingStart"><option value="tp1">After TP1</option><option value="immediate">Immediately</option></select></label>
           </div>
-        </section>
+        </details>
 
-        <section class="setting-group">
-          <div class="group-head"><h3>Signal: open interest</h3><span class="hint">All enabled filters must pass</span></div>
+        <details class="setting-group" open>
+          <summary class="group-head"><h3>Signal: open interest</h3><span class="hint">All enabled filters must pass</span></summary>
           <div class="filter-head"><span>Use</span><span>Timeframe</span><span>Op</span><span>Threshold</span><span class="right">Market max</span></div>
           <div id="oiFilters" class="filter-list"></div>
-        </section>
+        </details>
 
-        <section class="setting-group">
-          <div class="group-head"><h3>Signal: volume</h3><span class="hint">Percentage change, not USD</span></div>
+        <details class="setting-group">
+          <summary class="group-head"><h3>Signal: volume</h3><span class="hint">Percentage change, not USD</span></summary>
           <div class="filter-head"><span>Use</span><span>Timeframe</span><span>Op</span><span>Threshold</span><span class="right">Market max</span></div>
           <div id="volFilters" class="filter-list"></div>
-        </section>
+        </details>
 
-        <section class="setting-group">
-          <div class="group-head"><h3>Signal: price change</h3><span class="hint">Optional move filter</span></div>
+        <details class="setting-group">
+          <summary class="group-head"><h3>Signal: price change</h3><span class="hint">Optional move filter</span></summary>
           <div class="filter-head"><span>Use</span><span>Timeframe</span><span>Op</span><span>Threshold</span><span class="right">Market max</span></div>
           <div id="priceFilters" class="filter-list"></div>
-        </section>
+        </details>
 
-        <section class="setting-group">
-          <div class="group-head"><h3>Profile limits</h3><span class="hint">Specific caps for this profile</span></div>
+        <details class="setting-group">
+          <summary class="group-head"><h3>Profile limits</h3><span class="hint">Specific caps for this profile</span></summary>
           <div class="field-grid">
             <label class="field"><span>Max trades (0 = unlimited)</span><input type="number" min="0" step="1" data-profile-setting="maxTrades"></label>
             <label class="field"><span>Max open positions (0 = no cap)</span><input type="number" min="0" step="1" data-profile-setting="maxOpenPositions"></label>
             <label class="field"><span>Max positions per coin</span><input type="number" min="1" max="50" step="1" data-profile-setting="maxPositionsPerCoin"></label>
           </div>
-        </section>
+        </details>
 
         <div style="margin: 18px 0 10px; padding-top: 14px; border-top: 1px dashed var(--line); font-size: 11px; font-weight: 700; color: var(--dim); text-transform: uppercase; letter-spacing: 0.5px;">
           Global &amp; shared settings
         </div>
 
-        <section class="setting-group">
-          <div class="group-head"><h3>Shared capital</h3><span class="hint">Global fund &amp; risk calculation</span></div>
+        <details class="setting-group">
+          <summary class="group-head"><h3>Shared capital</h3><span class="hint">Global fund &amp; risk calculation</span></summary>
           <div class="field-grid">
             <label class="field"><span>Total fund (USDT)</span><input type="number" min="1" step="1" data-setting="totalFund"></label>
             <label class="field"><span>Risk unit</span>
               <select data-setting="riskMode"><option value="roe">ROE (% of margin)</option><option value="price">Price (% of coin)</option></select>
             </label>
           </div>
-        </section>
+        </details>
 
-        <section class="setting-group">
-          <div class="group-head"><h3>CoinGlass data source</h3><span class="hint">API key is optional</span></div>
+        <details class="setting-group">
+          <summary class="group-head"><h3>CoinGlass data source</h3><span class="hint">API key is optional</span></summary>
           <label class="field full"><span>Official API key <em class="muted">(empty = scrape the website)</em></span>
             <input id="cgApiKey" type="password" placeholder="Paste your CoinGlass API key…" autocomplete="off" spellcheck="false">
           </label>
@@ -179,20 +225,20 @@
             <button id="btnClearCgKey" class="btn ghost" type="button">Clear key</button>
           </div>
           <p class="note" id="cgKeyState">No API key: scraping the public website.</p>
-        </section>
+        </details>
 
-        <section class="setting-group">
-          <div class="group-head"><h3>Universe filters</h3><span class="hint">Which coins are eligible</span></div>
+        <details class="setting-group">
+          <summary class="group-head"><h3>Universe filters</h3><span class="hint">Which coins are eligible</span></summary>
           <div class="field-grid">
             <label class="field"><span>Minimum OI (USD)</span><input type="number" min="0" step="1000" data-setting="minOiUsd"></label>
             <label class="field"><span>Minimum 24h volume (USD)</span><input type="number" min="0" step="1000" data-setting="minVolUsd24h"></label>
             <label class="field full"><span>Excluded symbols (comma separated)</span><input type="text" data-setting="excludeSymbols" spellcheck="false"></label>
           </div>
           <label class="switch-row" style="margin-top:10px"><span class="switch"><input type="checkbox" data-setting="allowCoinglassPrice"><i></i></span><span>Use CoinGlass price if no exchange feed exists</span></label>
-        </section>
+        </details>
 
-        <section class="setting-group">
-          <div class="group-head"><h3>Execution</h3><span class="hint">Paper fill assumptions &amp; scan loop</span></div>
+        <details class="setting-group">
+          <summary class="group-head"><h3>Execution</h3><span class="hint">Paper fill assumptions &amp; scan loop</span></summary>
           <div class="field-grid">
             <label class="field"><span>Scan interval (sec)</span><input type="number" min="10" max="3600" step="1" data-setting="scanIntervalSec"></label>
             <label class="field"><span>Price refresh (ms)</span><input type="number" min="500" max="60000" step="100" data-setting="priceRefreshMs"></label>
@@ -204,16 +250,16 @@
             <label class="field inline"><span>Delay (minutes)</span><input type="number" min="0" max="10080" step="1" data-setting="reenterDelayMin"><em id="reenterHint" class="field-hint"></em></label>
           </div>
           <div class="venue-box">
-            <div class="venue-head"><span>Price venues</span><span id="venueStatus" class="venue-status">—</span></div>
+            <div class="venue-head"><span>Price venues</span><span id="venueStatus" class="venue-status">--</span></div>
             <div id="venueToggles" class="venue-toggles"></div>
             <p class="note">The bot picks the venue with the deepest 24h volume for each coin and falls back to another if a feed fails.</p>
           </div>
           <label class="switch-row" style="margin-top:10px"><span class="switch"><input type="checkbox" data-setting="autoStart"><i></i></span><span>Auto-start bot on page load</span></label>
           <label class="switch-row" style="margin-top:10px"><span class="switch"><input type="checkbox" id="chkNotifications"><i></i></span><span>Browser desktop notifications</span></label>
-        </section>
+        </details>
 
-        <section class="setting-group" id="liveSettingsGroup">
-          <div class="group-head"><h3>Live execution guardrails</h3><span class="hint">Active when in Live mode</span></div>
+        <details class="setting-group" id="liveSettingsGroup">
+          <summary class="group-head"><h3>Live execution guardrails</h3><span class="hint">Active when in Live mode</span></summary>
           <div class="field-grid">
             <label class="field"><span>Execution exchange</span>
               <select data-live-setting="exchange">
@@ -229,10 +275,10 @@
             <label class="field"><span>Max live open positions (0 = off)</span><input type="number" min="0" max="50" step="1" data-live-setting="maxOpenPositions"></label>
           </div>
           <label class="switch-row" style="margin-top:10px"><span class="switch"><input type="checkbox" data-live-setting="clampLeverage" checked><i></i></span><span>Clamp leverage to symbol exchange maximum</span></label>
-        </section>
+        </details>
 
-        <section class="setting-group">
-          <div class="group-head"><h3>Data &amp; Backup</h3><span class="hint">Export or migrate storage</span></div>
+        <details class="setting-group">
+          <summary class="group-head"><h3>Data &amp; Backup</h3><span class="hint">Export or migrate storage</span></summary>
           <div class="foot-row" style="gap:8px; margin-top:8px;">
             <button id="btnExportBackup" class="btn ghost block" type="button">Export backup</button>
             <button id="btnImportBackup" class="btn ghost block" type="button">Import backup</button>
@@ -249,7 +295,7 @@
             <button id="btnImportLegacy" class="btn ghost block" type="button">Import legacy state.json</button>
             <input type="file" id="fileLegacyInput" accept=".json" style="display:none">
           </div>
-        </section>
+        </details>
 
       </div>
 
@@ -263,9 +309,20 @@
       </div>
     </aside>
 
-    <main class="content">
+    <main class="content" data-active-view="overview">
 
-      <section class="panel">
+      <div class="workspace-bar">
+        <div class="workspace-tabs" id="workspaceTabs" role="tablist" aria-label="Workspace View">
+          <button class="ws-tab active" data-view="overview" type="button">Overview</button>
+          <button class="ws-tab" data-view="scanner" type="button">Scanner &amp; Feed</button>
+          <button class="ws-tab" data-view="performance" type="button">PnL &amp; Chart</button>
+          <button class="ws-tab" data-view="trades" type="button">Trade History</button>
+          <button class="ws-tab" data-view="logs" type="button">Activity Log</button>
+          <button class="ws-tab" data-view="all" type="button">All Views</button>
+        </div>
+      </div>
+
+      <section class="panel" id="panelCoinGlass">
         <div class="panel-head">
           <div>
             <h2>CoinGlass live data</h2>
@@ -292,10 +349,10 @@
             <tbody id="cgBody"></tbody>
           </table>
         </div>
-        <div class="table-foot"><span id="cgFoot">—</span><span id="cgUpdated" class="countdown"></span></div>
+        <div class="table-foot"><span id="cgFoot">--</span><span id="cgUpdated" class="countdown"></span></div>
       </section>
 
-      <section class="panel">
+      <section class="panel" id="panelPositions">
         <div class="panel-head">
           <div><h2>Open positions</h2><p class="panel-sub" id="positionsSub">No open positions</p></div>
           <button id="btnCloseAll" class="btn small danger-ghost" type="button">Close all</button>
@@ -303,7 +360,7 @@
         <div id="positionsBody" class="positions"></div>
       </section>
 
-      <section class="panel">
+      <section class="panel" id="panelScanner">
         <div class="panel-head scanner-head">
           <div>
             <h2>Live scanner</h2>
@@ -328,7 +385,7 @@
           <table class="data-table markets-table">
             <thead>
               <tr>
-                <th>Coin</th><th>Price</th>
+                <th>Coin</th><th class="num">Price</th>
                 <th class="num">OI 5m</th><th class="num">OI 15m</th><th class="num">OI 30m</th><th class="num">OI 1h</th><th class="num">OI 4h</th>
                 <th class="num">Vol 1h</th><th class="num">Vol 4h</th>
                 <th>Venue</th><th>Signal</th><th></th>
@@ -337,10 +394,10 @@
             <tbody id="marketsBody"></tbody>
           </table>
         </div>
-        <div class="table-foot"><span id="marketFoot">—</span><span id="scanCountdown" class="countdown"></span></div>
+        <div class="table-foot"><span id="marketFoot">--</span><span id="scanCountdown" class="countdown"></span></div>
       </section>
 
-      <section class="panel">
+      <section class="panel" id="panelChart">
         <div class="panel-head">
           <div><h2>Fund PnL</h2><p class="panel-sub" id="chartSub">Equity curve · paper account</p></div>
           <div class="chart-legend"><span class="legend-dot green"></span>Equity <span class="legend-dash"></span>Initial fund</div>
@@ -348,7 +405,7 @@
         <div class="chart-wrap"><canvas id="equityChart"></canvas><div id="chartTooltip" class="chart-tooltip hidden"></div></div>
       </section>
 
-      <section class="panel">
+      <section class="panel" id="panelTrades">
         <div class="panel-head">
           <div><h2>Trade history</h2><p class="panel-sub" id="historySub">0 closed trades</p></div>
           <div class="scanner-tools">
@@ -364,10 +421,10 @@
             <tbody id="tradesBody"></tbody>
           </table>
         </div>
-        <div class="table-foot"><span id="tradesFoot">—</span><button id="btnLoadMore" class="btn small ghost hidden" type="button">Load more</button></div>
+        <div class="table-foot"><span id="tradesFoot">--</span><button id="btnLoadMore" class="btn small ghost hidden" type="button">Load more</button></div>
       </section>
 
-      <section class="panel">
+      <section class="panel" id="panelLogs">
         <div class="panel-head">
           <div><h2>Activity log</h2><p class="panel-sub">Newest first · last 80 events · full log + collected trade data available for download</p></div>
           <div class="scanner-tools">
@@ -385,7 +442,7 @@
     <span>OI Sniper is a <strong>trading system</strong>. Keys stay in your browser. Markets are risky; this is not financial advice.</span>
     <div style="display:flex; align-items:center; gap:10px;">
       <button id="btnOpenTour" class="btn small ghost" type="button">Quick Guide</button>
-      <span id="feedFoot">—</span>
+      <span id="feedFoot">--</span>
     </div>
   </footer>
 </div>

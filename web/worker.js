@@ -96,13 +96,11 @@ async function boot() {
   // Periodic CoinGlass background scraper (fast lane 10s, full lane 60s)
   setInterval(async () => {
     try {
-      if (engine.state.meta.running) {
-        await engine.refreshMarketsIfStale();
-      }
+      await engine.refreshMarketsIfStale();
     } catch {
       /* handled inside cgClient */
     }
-  }, 10000);
+  }, 15000);
 
   // Live telemetry broadcast loop (every 1 second)
   setInterval(() => {

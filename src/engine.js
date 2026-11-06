@@ -145,7 +145,7 @@ export class Engine {
 
   async init() {
     this.marketStatus.state = "connecting";
-    this.log("info", "Engine starting — paper trading only.");
+    this.log("info", "Engine starting: paper trading only.");
     this._sampleEquity(true);
     try {
       await this.hub.discover(true);
@@ -347,7 +347,7 @@ export class Engine {
         this._cooldowns.clear();
         this._lastEquityAt = 0;
         didReset = true;
-        this.log("warn", `Total fund changed to $${merged.totalFund} — strategy reset.`);
+        this.log("warn", `Total fund changed to $${merged.totalFund}: strategy reset.`);
       } else {
         // No history yet: just re-base the curve so the chart has no fake jump.
         this.state.settings = merged;
@@ -370,8 +370,8 @@ export class Engine {
       this.log(
         "info",
         hasKey
-          ? "CoinGlass API key saved — switching to the official API."
-          : "CoinGlass API key cleared — falling back to website scraping."
+          ? "CoinGlass API key saved: switching to official API."
+          : "CoinGlass API key cleared: falling back to website scraping."
       );
     }
 
@@ -476,7 +476,7 @@ export class Engine {
     });
     if (!this._deviceFeedLogged) {
       this._deviceFeedLogged = true;
-      this.log("info", `CoinGlass device feed connected — ${finalCoins.length} coins from this browser.`);
+      this.log("info", `CoinGlass device feed connected: ${finalCoins.length} coins from this browser.`);
     }
     // Deliberately no save(): a feed push happens every couple of seconds and
     // the rows are not persisted, so writing the whole snapshot here would
@@ -556,7 +556,7 @@ export class Engine {
         });
         if (wasDown) {
           const how = data.source === "api" ? "via official API" : "scraped";
-          this.log("info", `CoinGlass connected — ${data.coins.length} coins ${how}.`);
+          this.log("info", `CoinGlass connected: ${data.coins.length} coins ${how}.`);
         }
         return this.marketCache;
       } catch (err) {
@@ -1008,7 +1008,7 @@ export class Engine {
       }
 
       if (result.stale) {
-        this.log("warn", "Signal data is more than 2.5 minutes old — not opening new trades.");
+        this.log("warn", "Signal data is more than 2.5 minutes old: not opening new trades.");
         result.ok = false;
         return result;
       }
@@ -1059,7 +1059,7 @@ export class Engine {
         }
         this.log(
           "info",
-          `Qualified: ${result.qualified}, opened 0${parts.length ? ` — ${parts.join(", ")}` : ""}.`
+          `Qualified: ${result.qualified}, opened 0${parts.length ? ` (${parts.join(", ")})` : ""}.`
         );
       }
 

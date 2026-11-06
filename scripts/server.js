@@ -342,6 +342,12 @@ const server = http.createServer(async (req, res) => {
         return sendJson(res, 200, { ok: true, ...result });
       }
 
+      if (method === "POST" && pathname === "/api/device/market") {
+        const body = await readBody(req);
+        const result = engine.ingestDeviceFeed(body);
+        return sendJson(res, result.ok ? 200 : 400, result);
+      }
+
       if (method === "POST" && pathname === "/api/status-config") {
         const body = await readBody(req);
         const { liveEnabled = true, message = "" } = body || {};
