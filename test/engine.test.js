@@ -618,3 +618,37 @@ test("short trade execution: opens, takes TP1 partially, and closes on trailing 
     engine.destroy();
   }
 });
+
+test("Engine._finalize preserves live trade audit fields (PRD L14 / §6.5)", () => {
+  const engine = makeEngine();
+  try {
+    const pos = engine._openPosition(
+      coin("BTC"),
+      { venue: "bybit", venueName: "Bybit", venueSymbol: "BTCUSDT", base: "BTC", price: 100, ts: Date.now() },
+      { side: "long", checks: [] }
+    );
+    assert.ok(pos);
+
+    // Attach mock live execution audit metadata to position
+    pos.orderIds = ["ord_entry_1", "ord_sl_2"];
+    pos.fills = [{ id: "fill_1", price: 100, qty: 1, fee: 0.05 }];
+    pos.feesExchange = 0.05;
+    pos.fundingExchange = -0.01;
+    pos.protection = { slOrderId: "sl_123", tp1OrderId: "tp_456" };
+    pos.exchangeSymbol = "BTCUSDT";
+    pos.clientIdPrefix = "oi_bybit_";
+
+    const trade = engine._finalize(pos, "manual-test");
+    assert.ok(trade, "finalized trade record returned");
+    assert.deepEqual(trade.orderIds, ["ord_entry_1", "ord_sl_2"]);
+    assert.deepEqual(trade.fills, [{ id: "fill_1", price: 100, qty: 1, fee: 0.05 }]);
+    assert.equal(trade.feesExchange, 0.05);
+    assert.equal(trade.fundingExchange, -0.01);
+    assert.deepEqual(trade.protection, { slOrderId: "sl_123", tp1OrderId: "tp_456" });
+    assert.equal(trade.exchangeSymbol, "BTCUSDT");
+    assert.equal(trade.clientIdPrefix, "oi_bybit_");
+  } finally {
+    engine.destroy();
+  }
+});
+

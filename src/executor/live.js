@@ -53,8 +53,11 @@ export class LiveExecutor {
     const liveSettings = s.live || {};
 
     // 1. Kill switch check
-    if (engine.killSwitchActive) {
-      return { ok: false, reason: "kill-switch-active" };
+    if (engine.killSwitchActive || engine.liveEnabled === false) {
+      return {
+        ok: false,
+        reason: engine.liveEnabled === false ? "live-disabled-by-status" : "kill-switch-active",
+      };
     }
 
     // 2. Daily loss cap guardrail (PRD L9)
@@ -325,10 +328,19 @@ export class LiveExecutor {
     if (pos.slPrice !== oldSl && this.adapter) {
       const symKey = pos.exchangeSymbol || pos.symbol.toUpperCase();
       try {
-        await this.adapter.amendStop(
-          { symbol: symKey, orderId: pos.protection.slOrderId, side: pos.side },
-          pos.slPrice
-        );
+        if (typeof this.adapter.amendStop === "function") {
+          await this.adapter.amendStop(
+            { symbol: symKey, orderId: pos.protection?.slOrderId, side: pos.side },
+            pos.slPrice
+          );
+        } else if (typeof this.adapter.placeStop === "function") {
+          await this.adapter.placeStop(
+            symKey,
+            pos.side === "long" ? "sell" : "buy",
+            pos.slPrice,
+            pos.qty
+          );
+        }
         engine.log("info", `LIVE TRAILING STOP AMENDED for ${pos.symbol} -> $${round(pos.slPrice, 4)}`);
       } catch (err) {
         console.warn(`[live-executor] Failed to amend trailing stop on ${symKey}:`, err?.message);

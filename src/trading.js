@@ -164,11 +164,39 @@ export function enabledFilterCount(settings = {}) {
  * or derived from filters/direction for legacy settings.
  */
 export function evaluateCoin(coin, settings = {}, explicitSide = null) {
+  const dirExplicit = settings.direction === "long" || settings.direction === "short" ? settings.direction : null;
+  const targetExplicit = explicitSide || dirExplicit;
+
+  if (settings.profiles && (settings.profiles.long || settings.profiles.short)) {
+    const longP = settings.profiles.long;
+    const shortP = settings.profiles.short;
+    if (targetExplicit === "long" && longP) {
+      return evaluateCoin(coin, longP, "long");
+    }
+    if (targetExplicit === "short" && shortP) {
+      return evaluateCoin(coin, shortP, "short");
+    }
+    if (longP?.enabled && !shortP?.enabled) {
+      return evaluateCoin(coin, longP, targetExplicit);
+    }
+    if (shortP?.enabled && !longP?.enabled) {
+      return evaluateCoin(coin, shortP, targetExplicit);
+    }
+    const longEv = longP?.enabled ? evaluateCoin(coin, longP, "long") : { qualified: false, configured: false };
+    const shortEv = shortP?.enabled ? evaluateCoin(coin, shortP, "short") : { qualified: false, configured: false };
+    if (longEv.qualified && shortEv.qualified) {
+      return { configured: true, qualified: false, side: "conflict", checks: [...(longEv.checks || []), ...(shortEv.checks || [])] };
+    }
+    if (longEv.qualified) return longEv;
+    if (shortEv.qualified) return shortEv;
+    return longEv.configured ? longEv : shortEv.configured ? shortEv : longEv;
+  }
+
   if (settings.enabled === false) {
     return {
       configured: false,
       qualified: false,
-      side: explicitSide || null,
+      side: null,
       checks: [],
       passCount: 0,
       total: 0,
@@ -182,7 +210,7 @@ export function evaluateCoin(coin, settings = {}, explicitSide = null) {
     return {
       configured: false,
       qualified: false,
-      side: explicitSide || null,
+      side: null,
       checks,
       passCount: 0,
       total: 0,

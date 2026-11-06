@@ -231,14 +231,22 @@ export class IndexedDbStore {
     }
   }
 
-  async exportBackup() {
+  async exportBackup({ includeKeys = false } = {}) {
     await this.flush();
-    const backup = {
-      version: 1,
-      app: "oi-sniper-web",
-      exportedAt: now(),
-      state: this.state,
-    };
+    let cleanSettings = JSON.parse(JSON.stringify(this.state.settings || {}));
+    if (!includeKeys) {
+      cleanSettings.coinglassApiKey = "";
+      delete cleanSettings.coinglassKeySet;
+      if (cleanSettings.live) {
+        delete cleanSettings.live.apiKey;
+        delete cleanSettings.live.secret;
+        delete cleanSettings.live.passphrase;
+      }
+    }
+
+    let trades = Array.isArray(this.state.trades) ? [...this.state.trades] : [];
+    let curve = Array.isArray(this.state.equityCurve) ? [...this.state.equityCurve] : [];
+    let logs = Array.isArray(this.state.logs) ? this.state.logs.slice(-1000) : [];
 
     if (this.db && !this.fallbackMode) {
       try {
@@ -246,36 +254,100 @@ export class IndexedDbStore {
         const tradesReq = promisifyRequest(tx.objectStore("trades").getAll());
         const curveReq = promisifyRequest(tx.objectStore("curve").getAll());
         const logsReq = promisifyRequest(tx.objectStore("logs").getAll());
-        const [trades, curve, logs] = await Promise.all([tradesReq, curveReq, logsReq]);
-        backup.trades = trades || [];
-        backup.curve = curve || [];
-        backup.logs = (logs || []).slice(-1000);
+        const [dbTrades, dbCurve, dbLogs] = await Promise.all([tradesReq, curveReq, logsReq]);
+        if (Array.isArray(dbTrades) && dbTrades.length) trades = dbTrades;
+        if (Array.isArray(dbCurve) && dbCurve.length) curve = dbCurve;
+        if (Array.isArray(dbLogs) && dbLogs.length) logs = dbLogs.slice(-1000);
       } catch (err) {
         console.warn("[idb-store] Additional store backup read failed:", err?.message);
       }
     }
-    return backup;
+
+    return {
+      version: 1,
+      app: "oi-sniper-web",
+      exportedAt: new Date().toISOString(),
+      settings: cleanSettings,
+      trades,
+      equityCurve: curve,
+      curve, // backwards compatibility
+      logs,
+      state: {
+        ...this.state,
+        settings: cleanSettings,
+      },
+    };
   }
 
   async importBackup(data) {
     if (!data || typeof data !== "object") {
       throw new Error("invalid-backup-format");
     }
-    const incomingState = data.state || (data.fund && data.settings ? data : null);
+    const incomingState =
+      data.state ||
+      (data.fund && data.settings ? data : null) ||
+      (data.settings ? { ...this.state, settings: data.settings } : null);
     if (!incomingState) {
       throw new Error("backup-missing-state");
     }
 
+    const prevApiKey = this.state?.settings?.coinglassApiKey;
     this.state = sanitizeLoadedState(incomingState);
-    if (Array.isArray(data.trades) && data.trades.length > (this.state.trades?.length || 0)) {
-      this.state.trades = data.trades;
+    if (!this.state.settings.coinglassApiKey && prevApiKey) {
+      this.state.settings.coinglassApiKey = prevApiKey;
     }
-    if (Array.isArray(data.curve) && data.curve.length > (this.state.equityCurve?.length || 0)) {
-      this.state.equityCurve = data.curve;
+
+    const rawTrades = Array.isArray(data.trades) ? data.trades : this.state.trades || [];
+    const trades = rawTrades.filter(
+      (t) => t && typeof t === "object" && typeof t.id === "string" && t.id.length > 0
+    );
+    this.state.trades = trades;
+
+    const rawCurve = Array.isArray(data.equityCurve)
+      ? data.equityCurve
+      : Array.isArray(data.curve)
+      ? data.curve
+      : this.state.equityCurve || [];
+    const curve = rawCurve
+      .filter((p) => p && typeof p === "object" && Number.isFinite(Number(p.equity)))
+      .map((p) => ({ ...p, time: p.time ?? p.t, t: p.t ?? p.time }));
+    this.state.equityCurve = curve;
+
+    if (Array.isArray(data.logs)) {
+      this.state.logs = data.logs.slice(-1000);
     }
 
     this.save(this.state);
     await this.flush();
+
+    if (this.db && !this.fallbackMode) {
+      try {
+        const tx = this.db.transaction(["trades", "curve", "logs"], "readwrite");
+        const tStore = tx.objectStore("trades");
+        const cStore = tx.objectStore("curve");
+        const lStore = tx.objectStore("logs");
+        await Promise.all([
+          promisifyRequest(tStore.clear()),
+          promisifyRequest(cStore.clear()),
+          promisifyRequest(lStore.clear()),
+        ]);
+        for (const t of trades) {
+          if (t && t.id) tStore.put(t);
+        }
+        for (const pt of curve) {
+          if (pt && (pt.time !== undefined || pt.t !== undefined)) {
+            const row = pt.time !== undefined ? pt : { ...pt, time: pt.t };
+            cStore.put(row);
+          }
+        }
+        for (const log of this.state.logs) {
+          lStore.add(log);
+        }
+      } catch (err) {
+        console.warn("[idb-store] Restoring indexeddb collections failed:", err?.message);
+      }
+    }
+
     return { ok: true, trades: this.state.trades.length, positions: this.state.positions.length };
   }
 

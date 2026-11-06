@@ -19,6 +19,7 @@ let bus = null;
 const tickListeners = new Set();
 const statusListeners = new Set();
 let wakeLock = null;
+let botRunning = false;
 let lockResolver = null;
 
 export function isLeaderTab() {
@@ -74,6 +75,7 @@ function spawnWorker() {
     if (!msg) return;
 
     if (msg.type === "TICK") {
+      if (msg.running !== undefined) setBotRunning(msg.running);
       notifyTick(msg);
       return;
     }
@@ -159,16 +161,52 @@ export async function api(path, options = {}) {
   });
 }
 
-async function requestWakeLock() {
-  if ("wakeLock" in navigator && !wakeLock) {
-    try {
-      wakeLock = await navigator.wakeLock.request("screen");
-      wakeLock.addEventListener("release", () => {
-        wakeLock = null;
-      });
-    } catch {
-      /* wake lock optional */
+export function setBotRunning(running) {
+  const next = Boolean(running);
+  if (botRunning !== next) {
+    botRunning = next;
+    if (botRunning) {
+      requestWakeLock();
+    } else {
+      releaseWakeLock();
     }
+  }
+}
+
+export async function requestWakeLock() {
+  if (!("wakeLock" in navigator)) return;
+  if (!botRunning) return;
+  if (wakeLock) return;
+
+  try {
+    wakeLock = await navigator.wakeLock.request("screen");
+    wakeLock.addEventListener("release", () => {
+      wakeLock = null;
+      if (botRunning && document.visibilityState === "visible") {
+        notifyStatus({
+          kind: "wake-lock-lost",
+          message: "Screen wake lock was released. Screen may sleep.",
+        });
+      }
+    });
+    notifyStatus({ kind: "wake-lock-active" });
+  } catch {
+    wakeLock = null;
+    notifyStatus({
+      kind: "wake-lock-rejected",
+      message: "Screen wake lock request was rejected. Ensure tab remains in focus to prevent sleep.",
+    });
+  }
+}
+
+export async function releaseWakeLock() {
+  if (wakeLock) {
+    try {
+      await wakeLock.release();
+    } catch {
+      /* ignore */
+    }
+    wakeLock = null;
   }
 }
 
@@ -203,8 +241,17 @@ async function pollStatusFile() {
     if (status.liveEnabled === false) {
       notifyStatus({
         kind: "kill-switch",
-        message: status.message || "Trading engine temporarily disabled by admin.",
+        message: status.message || "Live trading is temporarily disabled by admin.",
       });
+    } else {
+      notifyStatus({ kind: "kill-switch-cleared" });
+    }
+
+    if (isLeader) {
+      api("/api/status-config", {
+        method: "POST",
+        body: { liveEnabled: status.liveEnabled !== false, message: status.message || "" },
+      }).catch(() => {});
     }
   } catch {
     /* status file polling is non-blocking */
@@ -230,6 +277,7 @@ export async function initApi() {
       if (!msg) return;
 
       if (msg.type === "TICK") {
+        if (msg.running !== undefined) setBotRunning(msg.running);
         notifyTick(msg);
       } else if (msg.type === "TAKEOVER_REQUEST" && isLeader) {
         console.log("[api] Received takeover request, flushing and releasing lock...");
@@ -249,8 +297,7 @@ export async function initApi() {
     navigator.storage.persist().catch(() => {});
   }
 
-  // Setup Wake Lock and drift monitoring
-  requestWakeLock();
+  // Drift monitoring
   setupBackgroundDriftMonitor();
 
   // Flush on pagehide / visibilitychange
@@ -267,8 +314,15 @@ export async function initApi() {
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "hidden") {
       flush();
+      notifyStatus({
+        kind: "tab-hidden",
+        message: "Tab is in background. Timers may be throttled; keep tab visible for optimal execution.",
+      });
     } else {
-      requestWakeLock();
+      notifyStatus({ kind: "tab-visible" });
+      if (botRunning) {
+        requestWakeLock();
+      }
     }
   });
 

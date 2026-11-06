@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark">
-<title>OI Sniper — Paper Trading Bot</title>
+<title>OI Sniper: Paper Trading Bot</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%230b1220'/%3E%3Cpath d='M14 40l10-12 9 7 15-17' fill='none' stroke='%2316d39a' stroke-width='5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="/styles.css">
 </head>
@@ -43,7 +43,7 @@
 
     <div class="top-actions">
       <button id="btnExchangeConnect" class="btn ghost" type="button">Connect exchange</button>
-      <button id="btnToggle" class="btn primary" type="button"><span id="toggleIcon">▶</span> <span id="toggleText">Start bot</span></button>
+      <button id="btnToggle" class="btn primary" type="button"><span id="toggleIcon" aria-hidden="true">▶</span> <span id="toggleText">Start bot</span></button>
       <button id="btnScan" class="btn" type="button">Scan now</button>
       <button id="btnKillSwitch" class="btn danger-ghost" type="button" title="Stop opening new positions">Kill switch</button>
       <button id="btnPanic" class="btn danger hidden" type="button" title="Panic: Close all positions & cancel all orders">Panic</button>
@@ -74,7 +74,7 @@
       <div class="panel-head sticky">
         <div>
           <h2>Strategy settings</h2>
-          <p class="panel-sub">Everything is saved to <code>data/state.json</code></p>
+          <p class="panel-sub">Saved locally in your browser storage</p>
         </div>
         <span id="dirtyBadge" class="dirty hidden">unsaved</span>
       </div>
@@ -129,19 +129,19 @@
         </section>
 
         <section class="setting-group">
-          <div class="group-head"><h3>Signal — open interest</h3><span class="hint">All enabled filters must pass</span></div>
+          <div class="group-head"><h3>Signal: open interest</h3><span class="hint">All enabled filters must pass</span></div>
           <div class="filter-head"><span>Use</span><span>Timeframe</span><span>Op</span><span>Threshold</span><span class="right">Market max</span></div>
           <div id="oiFilters" class="filter-list"></div>
         </section>
 
         <section class="setting-group">
-          <div class="group-head"><h3>Signal — volume</h3><span class="hint">Percentage change, not USD</span></div>
+          <div class="group-head"><h3>Signal: volume</h3><span class="hint">Percentage change, not USD</span></div>
           <div class="filter-head"><span>Use</span><span>Timeframe</span><span>Op</span><span>Threshold</span><span class="right">Market max</span></div>
           <div id="volFilters" class="filter-list"></div>
         </section>
 
         <section class="setting-group">
-          <div class="group-head"><h3>Signal — price change</h3><span class="hint">Optional move filter</span></div>
+          <div class="group-head"><h3>Signal: price change</h3><span class="hint">Optional move filter</span></div>
           <div class="filter-head"><span>Use</span><span>Timeframe</span><span>Op</span><span>Threshold</span><span class="right">Market max</span></div>
           <div id="priceFilters" class="filter-list"></div>
         </section>
@@ -164,7 +164,7 @@
           <div class="field-grid">
             <label class="field"><span>Total fund (USDT)</span><input type="number" min="1" step="1" data-setting="totalFund"></label>
             <label class="field"><span>Risk unit</span>
-              <select data-setting="riskMode"><option value="roe">ROE — % of margin</option><option value="price">Price — % of coin</option></select>
+              <select data-setting="riskMode"><option value="roe">ROE (% of margin)</option><option value="price">Price (% of coin)</option></select>
             </label>
           </div>
         </section>
@@ -178,7 +178,7 @@
             <button id="btnSaveCgKey" class="btn ghost" type="button">Save key</button>
             <button id="btnClearCgKey" class="btn ghost" type="button">Clear key</button>
           </div>
-          <p class="note" id="cgKeyState">No API key — scraping the public website.</p>
+          <p class="note" id="cgKeyState">No API key: scraping the public website.</p>
         </section>
 
         <section class="setting-group">
@@ -209,6 +209,7 @@
             <p class="note">The bot picks the venue with the deepest 24h volume for each coin and falls back to another if a feed fails.</p>
           </div>
           <label class="switch-row" style="margin-top:10px"><span class="switch"><input type="checkbox" data-setting="autoStart"><i></i></span><span>Auto-start bot on page load</span></label>
+          <label class="switch-row" style="margin-top:10px"><span class="switch"><input type="checkbox" id="chkNotifications"><i></i></span><span>Browser desktop notifications</span></label>
         </section>
 
         <section class="setting-group" id="liveSettingsGroup">
@@ -236,6 +237,13 @@
             <button id="btnExportBackup" class="btn ghost block" type="button">Export backup</button>
             <button id="btnImportBackup" class="btn ghost block" type="button">Import backup</button>
             <input type="file" id="fileBackupInput" accept=".json" style="display:none">
+          </div>
+          <label class="switch-row" style="margin-top:8px">
+            <span class="switch"><input type="checkbox" id="chkExportApiKeys"><i></i></span>
+            <span style="font-size:12px;">Include API keys in export</span>
+          </label>
+          <div style="margin-top:8px;">
+            <button id="btnCopyPreset" class="btn ghost block" type="button">📋 Copy strategy preset link</button>
           </div>
           <div style="margin-top:8px;">
             <button id="btnImportLegacy" class="btn ghost block" type="button">Import legacy state.json</button>
@@ -375,7 +383,10 @@
 
   <footer class="page-foot">
     <span>OI Sniper is a <strong>trading system</strong>. Keys stay in your browser. Markets are risky; this is not financial advice.</span>
-    <span id="feedFoot">—</span>
+    <div style="display:flex; align-items:center; gap:10px;">
+      <button id="btnOpenTour" class="btn small ghost" type="button">Quick Guide</button>
+      <span id="feedFoot">—</span>
+    </div>
   </footer>
 </div>
 
@@ -387,7 +398,7 @@
         <h2>Exchange Connect &amp; Key Vault</h2>
         <p class="modal-sub">WebCrypto AES-GCM credential vault · stored safely in your browser · keys never leave Worker memory</p>
       </div>
-      <button id="btnCloseExchangeModal" class="modal-close" type="button" aria-label="Close">&times;</button>
+      <button id="btnCloseExchangeModal" class="modal-close" type="button" aria-label="Close dialog">&times;</button>
     </div>
     <div class="modal-body">
       <div class="wizard-alert warning">
@@ -425,7 +436,7 @@
         <h2 style="color:#f87171;">⚠️ Switch to LIVE Trading</h2>
         <p class="modal-sub">Real funds will be risked on your connected exchange.</p>
       </div>
-      <button id="btnCloseLiveConfirmModal" class="modal-close" type="button" aria-label="Close">&times;</button>
+      <button id="btnCloseLiveConfirmModal" class="modal-close" type="button" aria-label="Close dialog">&times;</button>
     </div>
     <div class="modal-body">
       <div class="wizard-alert danger">
@@ -444,6 +455,89 @@
     <div class="modal-foot">
       <button id="btnCancelLiveConfirm" class="btn ghost" type="button">Cancel</button>
       <button id="btnActivateLive" class="btn danger" type="button" disabled>Activate LIVE mode</button>
+    </div>
+  </div>
+</div>
+
+<!-- 3-Step First-Run Onboarding Modal -->
+<div id="onboardingModal" class="modal-backdrop hidden">
+  <div class="modal-card onboarding-card" style="max-width: 540px;">
+    <div class="modal-head">
+      <div>
+        <h2 id="onboardStepTitle">Welcome to OI Sniper</h2>
+        <p class="modal-sub" id="onboardStepSubtitle">Step 1 of 3: Strategy Preset</p>
+      </div>
+      <button id="btnCloseOnboarding" class="modal-close" type="button" aria-label="Close dialog">&times;</button>
+    </div>
+    <div class="modal-body" id="onboardBody">
+      <!-- Step 1: Load preset -->
+      <div class="onboard-step active" data-step="1">
+        <h3 style="font-size:14px; margin:0 0 6px;">1. Select Strategy Preset</h3>
+        <p style="font-size:12.5px; color:var(--muted); line-height:1.5;">Choose a battle-tested strategy baseline. Presets configure position sizing, leverage, stop losses, and Open Interest filter thresholds.</p>
+        <div style="display:flex; flex-direction:column; gap:8px; margin-top:10px;">
+          <button class="btn ghost btn-preset-choice" data-preset="balanced" type="button" style="text-align:left; justify-content:space-between; padding:10px 14px;">
+            <div>
+              <strong style="color:var(--fg); display:block;">Default Balanced</strong>
+              <small style="color:var(--dim);">50% Fund · 50x · 20% SL · 50% TP1 · OI 5m &ge; 2.0%</small>
+            </div>
+            <span class="badge" style="font-size:11px; background:rgba(61,220,151,0.15); color:#3ddc97; padding:2px 6px; border-radius:4px;">Recommended</span>
+          </button>
+          <button class="btn ghost btn-preset-choice" data-preset="aggressive" type="button" style="text-align:left; justify-content:space-between; padding:10px 14px;">
+            <div>
+              <strong style="color:var(--fg); display:block;">Aggressive Scalp</strong>
+              <small style="color:var(--dim);">50% Fund · 75x · 15% SL · 30% TP1 · OI 5m &ge; 3.0%</small>
+            </div>
+          </button>
+          <button class="btn ghost btn-preset-choice" data-preset="conservative" type="button" style="text-align:left; justify-content:space-between; padding:10px 14px;">
+            <div>
+              <strong style="color:var(--fg); display:block;">Conservative Trend</strong>
+              <small style="color:var(--dim);">25% Fund · 20x · 25% SL · 60% TP1 · OI 15m &ge; 2.0%</small>
+            </div>
+          </button>
+        </div>
+      </div>
+
+      <!-- Step 2: Choose Paper vs Live (starts in Paper) -->
+      <div class="onboard-step hidden" data-step="2">
+        <h3 style="font-size:14px; margin:0 0 6px;">2. Execution Mode</h3>
+        <p style="font-size:12.5px; color:var(--muted); line-height:1.5;">OI Sniper supports simulated paper trading and real live exchange execution. <strong>The bot always starts in Paper mode</strong> with $500 simulated capital so you can test risk-free.</p>
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:12px;">
+          <div id="onboardModePaperCard" class="exchange-card active" style="cursor:pointer; padding:14px;">
+            <div style="font-weight:700; color:#3ddc97; font-size:14px; margin-bottom:4px;">🟢 PAPER TRADING</div>
+            <p style="font-size:11.5px; color:var(--dim); margin:0;">Zero financial risk. Simulated fills using live CoinGlass and exchange price books.</p>
+            <div style="margin-top:8px; font-size:11px; color:#3ddc97; font-weight:600;">✓ Active Default</div>
+          </div>
+          <div id="onboardModeLiveCard" class="exchange-card" style="cursor:pointer; padding:14px;">
+            <div style="font-weight:700; color:#f87171; font-size:14px; margin-bottom:4px;">🔴 LIVE TRADING</div>
+            <p style="font-size:11.5px; color:var(--dim); margin:0;">Places real futures orders via connected exchange API keys in your browser vault.</p>
+            <div style="margin-top:8px; font-size:11px; color:var(--muted);">Requires setup</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 3: Connect Exchange / Finish -->
+      <div class="onboard-step hidden" data-step="3">
+        <h3 style="font-size:14px; margin:0 0 6px;">3. Ready to Trade</h3>
+        <p style="font-size:12.5px; color:var(--muted); line-height:1.5;">Screen Wake Lock will keep your display awake while the bot scans. You can connect an exchange key at any time, or get started immediately in Paper mode.</p>
+        <div class="wizard-alert warning" style="margin-top:10px;">
+          <strong>Pro Tip:</strong> You can export a full backup or copy a shareable preset link anytime from the Strategy Settings panel.
+        </div>
+        <div style="margin-top:12px; display:flex; gap:10px;">
+          <button id="btnOnboardConnectExchange" class="btn ghost" type="button">Connect Exchange Now</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal-foot" style="justify-content: space-between; align-items: center;">
+      <div class="step-dots" id="onboardDots">
+        <span class="dot active"></span>
+        <span class="dot"></span>
+        <span class="dot"></span>
+      </div>
+      <div style="display: flex; gap: 8px;">
+        <button id="btnOnboardPrev" class="btn ghost hidden" type="button">Back</button>
+        <button id="btnOnboardNext" class="btn primary" type="button">Next →</button>
+      </div>
     </div>
   </div>
 </div>

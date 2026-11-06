@@ -304,10 +304,26 @@ export function normalizeSettings(input = {}) {
   const rawLongObj = (hasProfiles ? inputObj.profiles.long : null) || {};
   const rawShortObj = (hasProfiles ? inputObj.profiles.short : null) || {};
 
+  const defLong = DEFAULT_SETTINGS.profiles?.long || {};
+  const defShort = DEFAULT_SETTINGS.profiles?.short || {};
+
   const rawLong = { ...rawLongObj };
   for (const k of profileKeys) {
-    if (Object.prototype.hasOwnProperty.call(inputObj, k)) {
-      // If top-level was explicitly provided (e.g. overrides, legacy settings, updateSettings)
+    const profileCustom =
+      hasProfiles &&
+      Object.prototype.hasOwnProperty.call(rawLongObj, k) &&
+      rawLongObj[k] !== defLong[k];
+    const topCustom =
+      Object.prototype.hasOwnProperty.call(inputObj, k) &&
+      inputObj[k] !== DEFAULT_SETTINGS[k];
+
+    if (profileCustom) {
+      rawLong[k] = rawLongObj[k];
+    } else if (topCustom) {
+      rawLong[k] = inputObj[k];
+    } else if (hasProfiles && Object.prototype.hasOwnProperty.call(rawLongObj, k)) {
+      rawLong[k] = rawLongObj[k];
+    } else if (Object.prototype.hasOwnProperty.call(inputObj, k)) {
       rawLong[k] = inputObj[k];
     } else if (!Object.prototype.hasOwnProperty.call(rawLong, k)) {
       rawLong[k] = s[k];
@@ -316,7 +332,21 @@ export function normalizeSettings(input = {}) {
 
   const rawShort = { ...rawShortObj };
   for (const k of profileKeys) {
-    if (!Object.prototype.hasOwnProperty.call(rawShort, k)) {
+    const profileCustom =
+      hasProfiles &&
+      Object.prototype.hasOwnProperty.call(rawShortObj, k) &&
+      rawShortObj[k] !== defShort[k];
+    const topCustom =
+      Object.prototype.hasOwnProperty.call(inputObj, k) &&
+      inputObj[k] !== DEFAULT_SETTINGS[k];
+
+    if (profileCustom) {
+      rawShort[k] = rawShortObj[k];
+    } else if (topCustom && inputObj.direction === "short") {
+      rawShort[k] = inputObj[k];
+    } else if (hasProfiles && Object.prototype.hasOwnProperty.call(rawShortObj, k)) {
+      rawShort[k] = rawShortObj[k];
+    } else if (!Object.prototype.hasOwnProperty.call(rawShort, k)) {
       rawShort[k] = rawShortObj[k] ?? s[k];
     }
   }
@@ -431,12 +461,18 @@ export function sanitizeLoadedState(input) {
   }
   state.initialFund = toNum(input?.initialFund);
   if (state.initialFund === null || state.initialFund <= 0) state.initialFund = state.settings.totalFund;
-  state.trades = Array.isArray(input?.trades) ? input.trades.filter((t) => t && t.id) : [];
+  state.trades = Array.isArray(input?.trades)
+    ? input.trades.filter(
+        (t) => t && typeof t === "object" && typeof t.id === "string" && t.id.length > 0
+      )
+    : [];
   state.positions = Array.isArray(input?.positions)
     ? input.positions.filter((p) => p && p.id && p.status === "open" && toNum(p.qty) > 0)
     : [];
   state.equityCurve = Array.isArray(input?.equityCurve)
-    ? input.equityCurve.filter((p) => p && Number.isFinite(toNum(p.equity)))
+    ? input.equityCurve
+        .filter((p) => p && typeof p === "object" && Number.isFinite(Number(p.equity)))
+        .map((p) => ({ ...p, time: p.time ?? p.t, t: p.t ?? p.time }))
     : base.equityCurve;
   if (!state.equityCurve.length) state.equityCurve = base.equityCurve;
   state.logs = Array.isArray(input?.logs) ? input.logs.slice(-250) : [];
@@ -557,5 +593,75 @@ export class Store {
     } catch (err) {
       console.error("[store] save failed:", err.message);
     }
+  }
+
+  exportBackup({ includeKeys = false } = {}) {
+    this.flush();
+    const cleanSettings = JSON.parse(JSON.stringify(this.state.settings || {}));
+    if (!includeKeys) {
+      cleanSettings.coinglassApiKey = "";
+      delete cleanSettings.coinglassKeySet;
+      if (cleanSettings.live) {
+        delete cleanSettings.live.apiKey;
+        delete cleanSettings.live.secret;
+        delete cleanSettings.live.passphrase;
+      }
+    }
+    const trades = JSON.parse(JSON.stringify(this.state.trades || []));
+    const curve = JSON.parse(JSON.stringify(this.state.equityCurve || []));
+    const logs = JSON.parse(JSON.stringify((this.state.logs || []).slice(-1000)));
+
+    return {
+      version: 1,
+      app: "oi-sniper-web",
+      exportedAt: new Date().toISOString(),
+      settings: cleanSettings,
+      trades,
+      equityCurve: curve,
+      curve,
+      logs,
+      state: {
+        ...this.state,
+        settings: cleanSettings,
+      },
+    };
+  }
+
+  importBackup(data) {
+    if (!data || typeof data !== "object") {
+      throw new Error("invalid-backup-format");
+    }
+    const incomingState =
+      data.state ||
+      (data.fund && data.settings ? data : null) ||
+      (data.settings ? { ...this.state, settings: data.settings } : null);
+    if (!incomingState) {
+      throw new Error("backup-missing-state");
+    }
+
+    const prevApiKey = this.state?.settings?.coinglassApiKey;
+    this.state = sanitizeLoadedState(incomingState);
+    if (!this.state.settings.coinglassApiKey && prevApiKey) {
+      this.state.settings.coinglassApiKey = prevApiKey;
+    }
+
+    if (Array.isArray(data.trades)) {
+      this.state.trades = data.trades.filter(
+        (t) => t && typeof t === "object" && typeof t.id === "string" && t.id.length > 0
+      );
+    }
+    const curve = data.equityCurve || data.curve;
+    if (Array.isArray(curve)) {
+      this.state.equityCurve = curve
+        .filter((p) => p && typeof p === "object" && Number.isFinite(Number(p.equity)))
+        .map((p) => ({ ...p, time: p.time ?? p.t, t: p.t ?? p.time }));
+    }
+    if (Array.isArray(data.logs)) {
+      this.state.logs = data.logs.slice(-1000);
+    }
+
+    this.save(this.state);
+    this.flush();
+    return { ok: true, trades: this.state.trades.length, positions: this.state.positions.length };
   }
 }

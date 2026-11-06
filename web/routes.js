@@ -278,7 +278,13 @@ export async function handleRpcRequest({ path, method = "GET", body = {}, query 
     }
 
     case "/api/backup/export": {
-      const backup = await store.exportBackup();
+      const searchParams = new URLSearchParams(path.includes("?") ? path.split("?")[1] : "");
+      const includeKeys =
+        query?.includeKeys === true ||
+        query?.includeKeys === "true" ||
+        searchParams.get("includeKeys") === "true" ||
+        body?.includeKeys === true;
+      const backup = await store.exportBackup({ includeKeys });
       return {
         status: 200,
         data: {
@@ -286,6 +292,18 @@ export async function handleRpcRequest({ path, method = "GET", body = {}, query 
           backup,
           filename: `oi-sniper-backup-${stamp()}.json`,
         },
+      };
+    }
+
+    case "/api/status-config": {
+      if (method !== "POST") return { status: 405, data: { ok: false, error: "method-not-allowed" } };
+      const { liveEnabled = true, message = "" } = body || {};
+      if (typeof engine.setStatusConfig === "function") {
+        engine.setStatusConfig({ liveEnabled, message });
+      }
+      return {
+        status: 200,
+        data: { ok: true, liveEnabled: engine.liveEnabled },
       };
     }
 

@@ -82,6 +82,7 @@ export function deepMerge(...sources) {
   for (const src of sources) {
     if (!isObj(src)) continue;
     for (const [k, v] of Object.entries(src)) {
+      if (k === "__proto__" || k === "constructor" || k === "prototype") continue;
       if (isObj(v) && isObj(out[k])) out[k] = deepMerge(out[k], v);
       else if (Array.isArray(v)) out[k] = v.map((x) => (isObj(x) ? deepMerge(x) : x));
       else out[k] = v;

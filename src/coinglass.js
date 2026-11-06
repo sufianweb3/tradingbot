@@ -123,7 +123,7 @@ export async function cgFetch(url, { retries = 2, timeoutMs = 25000 } = {}) {
   throw lastError || new Error("CoinGlass request failed");
 }
 
-function normaliseCoin(c) {
+export function normaliseCoin(c) {
   const oi = {};
   for (const tf of Object.keys(OI_FIELD)) oi[tf] = toNum(c[OI_FIELD[tf]]);
   const vol = {};
@@ -139,8 +139,13 @@ function normaliseCoin(c) {
     volUsd24h: toNum(c.volUsd, 0) ?? 0,
     oiChange24h: toNum(c.h24OiChangePercent),
     volChange24h: toNum(c.h24VolChangePercent),
+    priceChange5m: toNum(c.m5PriceChangePercent),
     priceChange1h: toNum(c.h1PriceChangePercent),
     priceChange24h: toNum(c.h24PriceChangePercent),
+    priceChange: {
+      "5m": toNum(c.m5PriceChangePercent),
+      "1h": toNum(c.h1PriceChangePercent),
+    },
     funding: toNum(c.avgFundingRateBySymbol),
     logo: c.symbolLogo || null,
   };
@@ -151,7 +156,7 @@ function normaliseCoin(c) {
  * The field names are snake_case and differ from the website payload, so map
  * them onto the same internal coin shape used by the scraper.
  */
-function normaliseApiCoin(c) {
+export function normaliseApiCoin(c) {
   const oi = {
     "5m": toNum(c.open_interest_change_percent_5m),
     "15m": toNum(c.open_interest_change_percent_15m),
@@ -180,8 +185,13 @@ function normaliseApiCoin(c) {
     volUsd24h,
     oiChange24h: toNum(c.open_interest_change_percent_24h),
     volChange24h: toNum(c.volume_change_percent_24h),
+    priceChange5m: toNum(c.price_change_percent_5m),
     priceChange1h: toNum(c.price_change_percent_1h),
     priceChange24h: toNum(c.price_change_percent_24h),
+    priceChange: {
+      "5m": toNum(c.price_change_percent_5m),
+      "1h": toNum(c.price_change_percent_1h),
+    },
     funding: toNum(c.avg_funding_rate_by_oi),
     logo: null,
   };

@@ -2,6 +2,7 @@
 
 import { fetchCoinMarkets, fetchTopMarkets, mergeTopRows } from "./cg-browser.js";
 import { initApi, api as localApi, takeOverEngine, onLiveTick, onStatusChange, isLeaderTab, APP_VERSION } from "./web/api.js";
+import { PRESETS, createPresetHash, parsePresetHash, deepMerge } from "./src/presets.js";
 
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => [...document.querySelectorAll(sel)];
@@ -155,10 +156,37 @@ const ago = (ms) => {
   return `${h}h ${m % 60}m ago`;
 };
 
+const bannerRegistry = new Map(); // id -> { id, level: 'warn'|'danger'|'info', message, kind, actionText, actionFn }
+
+function setBanner(id, bannerData) {
+  if (!bannerData) {
+    bannerRegistry.delete(id);
+  } else {
+    bannerRegistry.set(id, { id, ...bannerData });
+  }
+  renderServerNotice();
+}
+
+function clearBanner(id) {
+  bannerRegistry.delete(id);
+  renderServerNotice();
+}
+
 let activeNotice = null;
 
 function setNotice(notice) {
   activeNotice = notice;
+  if (!notice) {
+    bannerRegistry.delete("general");
+  } else {
+    const level = notice.kind === "error" || notice.kind === "kill-switch" ? "danger" : "warn";
+    bannerRegistry.set(notice.kind || "general", {
+      id: notice.kind || "general",
+      level: notice.level || level,
+      message: notice.message,
+      kind: notice.kind,
+    });
+  }
   renderServerNotice();
 }
 
@@ -173,25 +201,45 @@ function noteServerError(err) {
 function renderServerNotice() {
   const el = $("#serverNotice");
   if (!el) return;
-  if (!activeNotice) {
+  if (bannerRegistry.size === 0) {
     el.classList.add("hidden");
     el.innerHTML = "";
     return;
   }
   el.classList.remove("hidden");
-  if (activeNotice.kind === "secondary") {
-    el.innerHTML = `<span style="display:inline-flex; align-items:center; gap:10px;">${esc(activeNotice.message)} <button id="btnTakeOverNotice" class="btn" style="padding:2px 8px; font-size:12px; cursor:pointer;">Take Over Engine</button></span>`;
-    const btn = $("#btnTakeOverNotice");
-    if (btn) {
+  el.innerHTML = "";
+
+  for (const [id, banner] of bannerRegistry.entries()) {
+    const item = document.createElement("div");
+    item.className = `banner-item ${banner.level || "warn"}`;
+    item.dataset.bannerId = id;
+
+    const msgSpan = document.createElement("span");
+    msgSpan.innerHTML = esc(banner.message);
+    item.appendChild(msgSpan);
+
+    if (id === "secondary" || banner.kind === "secondary") {
+      const btn = document.createElement("button");
+      btn.className = "btn small";
+      btn.style.marginLeft = "10px";
+      btn.textContent = "Take Over Engine";
       btn.onclick = async () => {
         btn.disabled = true;
         btn.textContent = "Taking over...";
         await takeOverEngine();
       };
+      item.appendChild(btn);
+    } else if (banner.actionText && typeof banner.actionFn === "function") {
+      const btn = document.createElement("button");
+      btn.className = "btn small ghost";
+      btn.style.marginLeft = "10px";
+      btn.textContent = banner.actionText;
+      btn.onclick = banner.actionFn;
+      item.appendChild(btn);
     }
-    return;
+
+    el.appendChild(item);
   }
-  el.innerHTML = `<span>${esc(activeNotice.message)}</span>`;
 }
 
 function clearServerError() {
@@ -413,14 +461,14 @@ function updateDerived() {
     const mins = Math.max(0, num($('[data-setting="reenterDelayMin"]')?.value, 0));
     reenterEl.classList.remove("neg");
     if (!on) {
-      reenterEl.textContent = "Off — coins can re-enter immediately after a close.";
+      reenterEl.textContent = "Off: coins can re-enter immediately after a close.";
     } else if (mins <= 0) {
       reenterEl.textContent = "Delay 0 = immediately after a close.";
     } else {
       reenterEl.textContent = `= no same-coin trade for ${humanDuration(mins * 60)} after a close.`;
       if (mins > 1440) {
         reenterEl.classList.add("neg");
-        reenterEl.textContent += " — very long block";
+        reenterEl.textContent += " (very long block)";
       }
     }
   }
@@ -601,7 +649,7 @@ function renderConnection() {
       const blocked = !viaApi && /403/.test(String(cg.lastError || ""));
       if (blocked && !cg.apiKeySet) {
         sub.textContent =
-          "Waiting for this browser to feed data — keep this tab open, or add an official API key.";
+          "Waiting for this browser to feed data. Keep this tab open, or add an official API key.";
       } else {
         sub.textContent = `${viaApi ? "API" : "Scrape"} failed: ${
           cg.lastError || "unknown error"
@@ -626,10 +674,10 @@ function renderCgKeyState() {
   if (set) {
     const active = cg.source === "api" && cg.connected;
     el.textContent = active
-      ? "API key saved — using the official CoinGlass API."
-      : "API key saved — waiting for the next refresh.";
+      ? "API key saved: using the official CoinGlass API."
+      : "API key saved: waiting for the next refresh.";
   } else {
-    el.textContent = "No API key — scraping the public website.";
+    el.textContent = "No API key: scraping the public website.";
   }
 }
 
@@ -943,7 +991,7 @@ function renderMarkets() {
         if (openCount > 0 && !roomForMore) {
           signal = `<span class="pass-pill ready">OPEN${openCount > 1 ? ` ×${openCount}` : ""}</span>`;
         } else if (m.isConflict || m.side === "conflict") {
-          signal = `<span class="side-tag conflict" title="Qualified for both Long and Short — skipped">CONFLICT</span>`;
+          signal = `<span class="side-tag conflict" title="Qualified for both Long and Short: skipped">CONFLICT</span>`;
         } else if (m.stale) {
           signal = `<span class="pass-pill no" title="CoinGlass data is stale">STALE</span>`;
         } else if (m.qualified && !m.tradable) {
@@ -962,7 +1010,7 @@ function renderMarkets() {
         if ((m.qualified || m.isConflict) && !canTrade) {
           if (m.isConflict) {
             blockShort = "Conflict";
-            blockText = "Coin qualifies for both Long and Short profiles — skipped to avoid conflicting positions.";
+            blockText = "Coin qualifies for both Long and Short profiles: skipped to avoid conflicting positions.";
           } else if (m.stale) {
             blockShort = "Stale";
             blockText = "CoinGlass data is more than 2.5 minutes old.";
@@ -1330,6 +1378,24 @@ async function loadBootstrap() {
     applyBootstrap(data);
     state.requestErrors = 0;
     clearServerError();
+
+    // Auto-import strategy preset from URL hash if present
+    if (window.location.hash && window.location.hash.startsWith("#preset=")) {
+      try {
+        const preset = parsePresetHash(window.location.hash);
+        const prevKey = state.settings?.coinglassApiKey;
+        state.settings = deepMerge(state.settings || {}, preset);
+        if (prevKey && !state.settings.coinglassApiKey) {
+          state.settings.coinglassApiKey = prevKey;
+        }
+        await api("/api/settings", { method: "POST", body: { settings: state.settings } });
+        renderSettingsForm();
+        toast("Preset loaded", "success", "Imported strategy settings from URL preset (API keys stripped).");
+        history.replaceState(null, "", window.location.pathname);
+      } catch (err) {
+        toast("Preset error", "error", "Failed to load preset link: " + err.message);
+      }
+    }
   } catch (err) {
     state.requestErrors++;
     noteServerError(err);
@@ -1353,6 +1419,8 @@ async function refreshLive() {
     state.venues = data.venues || state.venues;
     state.serverOffset = num(data.serverTime) - Date.now();
     state.requestErrors = 0;
+    notificationManager.handlePositions(state.positions);
+    notificationManager.handleRunningState(state.meta?.running, state.meta?.stopReason);
 
     if (num(state.stats.totalTrades) > num(state.prevTrades)) {
       const prev = num(state.prevTrades);
@@ -1747,6 +1815,7 @@ async function refreshTrades(append = false) {
     state.tradesTotal = data.total || 0;
     state.prevTrades = num(state.stats.totalTrades);
     renderTrades();
+    notificationManager.handleTrades(state.trades);
   } catch {
     /* ignore */
   } finally {
@@ -1793,7 +1862,7 @@ async function saveSettings() {
     state.stats = res.stats || state.stats;
     localStorage.setItem("oiSniperSettings", JSON.stringify(state.settings));
     renderSettingsForm();
-    toast(res.reset ? "Settings saved — account reset" : "Settings saved", "success", res.reset ? "Total fund changed, so paper history was cleared." : "New trades use the new rules immediately.");
+    toast(res.reset ? "Settings saved: account reset" : "Settings saved", "success", res.reset ? "Total fund changed, so paper history was cleared." : "New trades use the new rules immediately.");
     await refreshLive();
     await refreshMarkets();
     await refreshTrades();
@@ -1859,7 +1928,7 @@ async function manualOpen(symbol, side = null, button = null) {
     let sub = map[err.message] || err.message;
     if (err.message === "cannot-open" && payload.reason) {
       const reasons = {
-        "no-margin": `Not enough free margin — needs ${money(payload.requiredMargin || 0)}, ${money(payload.available || 0)} available.`,
+        "no-margin": `Not enough free margin: needs ${money(payload.requiredMargin || 0)}, ${money(payload.available || 0)} available.`,
         "coin-cap": "Max positions per coin already open.",
         "max-open": "Max open positions reached.",
         "cooling": "Still in the re-entry delay.",
@@ -1867,7 +1936,7 @@ async function manualOpen(symbol, side = null, button = null) {
         "conflict": "Coin qualifies for both Long and Short profiles.",
         "no-feed": "No exchange price feed for this coin.",
         "stale": "CoinGlass data is stale.",
-        "no-size": "Position size rounds to zero — check the sizing settings.",
+        "no-size": "Position size rounds to zero: check the sizing settings.",
       };
       sub = reasons[payload.reason] || sub;
     }
@@ -2088,21 +2157,271 @@ function deviceLoop(fn, ms) {
   };
 }
 
+/* ------------------------------------------------------------------ */
+/* Strategy Presets & Preset Link Encoding                            */
+/* ------------------------------------------------------------------ */
+export { PRESETS, createPresetHash, parsePresetHash };
+
+/* ------------------------------------------------------------------ */
+/* Browser Desktop Notifications Manager                              */
+/* ------------------------------------------------------------------ */
+export const notificationManager = {
+  enabled: false,
+  lastStaleNoticeAt: 0,
+  lastBotRunning: null,
+  knownOpenPositions: new Set(),
+  lastClosedTradesCount: 0,
+  initialized: false,
+
+  init() {
+    const saved = localStorage.getItem("oi_sniper_notifications_v1");
+    this.enabled = saved === "true" && "Notification" in window && Notification.permission === "granted";
+    const chk = $("#chkNotifications");
+    if (chk) {
+      chk.checked = this.enabled;
+      chk.onchange = async () => {
+        if (chk.checked) {
+          if (!("Notification" in window)) {
+            toast("Notifications unsupported", "error", "Your browser does not support desktop notifications.");
+            chk.checked = false;
+            return;
+          }
+          if (Notification.permission === "default") {
+            const perm = await Notification.requestPermission();
+            if (perm !== "granted") {
+              toast("Permission denied", "warn", "Desktop notifications were not granted.");
+              chk.checked = false;
+              this.enabled = false;
+              localStorage.setItem("oi_sniper_notifications_v1", "false");
+              return;
+            }
+          } else if (Notification.permission === "denied") {
+            toast("Permission blocked", "warn", "Notifications are blocked. Please enable in site settings.");
+            chk.checked = false;
+            this.enabled = false;
+            localStorage.setItem("oi_sniper_notifications_v1", "false");
+            return;
+          }
+          this.enabled = true;
+          localStorage.setItem("oi_sniper_notifications_v1", "true");
+          toast("Notifications enabled", "success", "Alerts active for trades and events.");
+        } else {
+          this.enabled = false;
+          localStorage.setItem("oi_sniper_notifications_v1", "false");
+        }
+      };
+    }
+    this.initialized = true;
+  },
+
+  notify(title, body, tag = "") {
+    if (!this.enabled || !("Notification" in window) || Notification.permission !== "granted") return;
+    try {
+      new Notification(`OI Sniper · ${title}`, {
+        body,
+        tag: tag || undefined,
+        icon: 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="%230b1220"/><path d="M14 40l10-12 9 7 15-17" fill="none" stroke="%2316d39a" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+      });
+    } catch (e) {
+      console.warn("[notification] Dispatch failed:", e);
+    }
+  },
+
+  handlePositions(positions) {
+    if (!Array.isArray(positions)) return;
+    const currentIds = new Set();
+    for (const pos of positions) {
+      const id = String(pos.id || `${pos.symbol}-${pos.side}`);
+      currentIds.add(id);
+      if (this.initialized && this.knownOpenPositions.size > 0 && !this.knownOpenPositions.has(id)) {
+        this.notify(
+          "Trade Opened",
+          `${pos.side.toUpperCase()} ${pos.symbol} @ $${pos.entryPrice} (${pos.leverage || 50}x) · Margin $${pos.margin}`,
+          `open-${id}`
+        );
+      }
+    }
+    this.knownOpenPositions = currentIds;
+  },
+
+  handleTrades(trades) {
+    if (!Array.isArray(trades)) return;
+    if (this.initialized && this.lastClosedTradesCount > 0 && trades.length > this.lastClosedTradesCount) {
+      const newTrades = trades.slice(0, trades.length - this.lastClosedTradesCount);
+      for (const t of newTrades) {
+        const pnl = t.netPnl ?? t.pnl ?? 0;
+        const sign = pnl >= 0 ? "+" : "";
+        const roeStr = t.roe ? ` (${t.roe > 0 ? "+" : ""}${round(t.roe, 1)}% ROE)` : "";
+        this.notify(
+          "Trade Closed",
+          `${t.side.toUpperCase()} ${t.symbol} closed via ${t.reason || "Manual"} · PnL ${sign}$${round(pnl, 2)}${roeStr}`,
+          `close-${t.id || Date.now()}`
+        );
+      }
+    }
+    this.lastClosedTradesCount = trades.length;
+  },
+
+  handleRunningState(running, stopReason) {
+    const isRunning = Boolean(running);
+    if (this.initialized && this.lastBotRunning === true && !isRunning) {
+      this.notify("Bot Paused", `Trading stopped: ${stopReason || "Manual pause"}`, "bot-stopped");
+    }
+    this.lastBotRunning = isRunning;
+  },
+
+  handleStale(isStale, ageSec = 20) {
+    if (isStale) {
+      const nowTs = Date.now();
+      if (nowTs - this.lastStaleNoticeAt > 60000) {
+        this.lastStaleNoticeAt = nowTs;
+        this.notify("Market Data Stale", `CoinGlass feed delayed (>${ageSec}s). New entries paused.`, "market-stale");
+      }
+    }
+  },
+};
+
+/* ------------------------------------------------------------------ */
+/* 3-Step First-Run Onboarding Controller                             */
+/* ------------------------------------------------------------------ */
+export function setupOnboarding() {
+  const modal = $("#onboardingModal");
+  if (!modal) return;
+
+  let currentStep = 1;
+  const totalSteps = 3;
+
+  const showStep = (step) => {
+    currentStep = step;
+    $$(".onboard-step").forEach((el) => {
+      el.classList.toggle("active", el.dataset.step === String(step));
+      el.classList.toggle("hidden", el.dataset.step !== String(step));
+    });
+    $$("#onboardDots .dot").forEach((dot, idx) => {
+      dot.classList.toggle("active", idx === step - 1);
+    });
+
+    const titleEl = $("#onboardStepSubtitle");
+    if (titleEl) {
+      if (step === 1) titleEl.textContent = "Step 1 of 3: Strategy Preset";
+      else if (step === 2) titleEl.textContent = "Step 2 of 3: Execution Mode (Paper Default)";
+      else if (step === 3) titleEl.textContent = "Step 3 of 3: Connect Exchange & Start";
+    }
+
+    const btnPrev = $("#btnOnboardPrev");
+    if (btnPrev) btnPrev.classList.toggle("hidden", step === 1);
+
+    const btnNext = $("#btnOnboardNext");
+    if (btnNext) btnNext.textContent = step === totalSteps ? "Get Started! 🚀" : "Next →";
+  };
+
+  const closeTour = () => {
+    modal.classList.add("hidden");
+    localStorage.setItem("oi_sniper_onboarded_v1", "true");
+  };
+
+  const openTour = () => {
+    modal.classList.remove("hidden");
+    showStep(1);
+  };
+
+  $("#btnCloseOnboarding")?.addEventListener("click", closeTour);
+  $("#btnOpenTour")?.addEventListener("click", openTour);
+
+  $("#btnOnboardPrev")?.addEventListener("click", () => {
+    if (currentStep > 1) showStep(currentStep - 1);
+  });
+
+  $("#btnOnboardNext")?.addEventListener("click", () => {
+    if (currentStep < totalSteps) {
+      showStep(currentStep + 1);
+    } else {
+      closeTour();
+      toast("Welcome!", "success", "OI Sniper is ready for trading.");
+    }
+  });
+
+  // Step 1: Preset buttons
+  $$(".btn-preset-choice").forEach((btn) => {
+    btn.onclick = async () => {
+      const presetKey = btn.dataset.preset;
+      const presetData = PRESETS[presetKey];
+      if (presetData && state.settings) {
+        state.settings.profiles = state.settings.profiles || {};
+        state.settings.profiles.long = deepMerge(state.settings.profiles.long || {}, presetData);
+        state.settings.profiles.short = deepMerge(state.settings.profiles.short || {}, presetData);
+        await api("/api/settings", { method: "POST", body: { settings: state.settings } });
+        renderSettingsForm();
+        toast("Preset applied", "success", `Loaded ${presetKey.toUpperCase()} profile baseline.`);
+        showStep(2);
+      }
+    };
+  });
+
+  // Step 2: Paper vs Live cards (starts in Paper mode!)
+  const paperCard = $("#onboardModePaperCard");
+  const liveCard = $("#onboardModeLiveCard");
+  if (paperCard && liveCard) {
+    paperCard.onclick = () => {
+      paperCard.classList.add("active");
+      liveCard.classList.remove("active");
+    };
+    liveCard.onclick = () => {
+      toast("Live mode requires exchange setup", "info", "You can connect keys in Step 3.");
+      liveCard.classList.add("active");
+      paperCard.classList.remove("active");
+    };
+  }
+
+  // Step 3: Connect exchange button
+  $("#btnOnboardConnectExchange")?.addEventListener("click", () => {
+    closeTour();
+    $("#btnExchangeConnect")?.click();
+  });
+
+  // First-run auto open
+  const onboarded = localStorage.getItem("oi_sniper_onboarded_v1");
+  if (onboarded !== "true") {
+    openTour();
+  }
+}
+
 function setupBackupUi() {
   const btnExport = $("#btnExportBackup");
+  const chkExportKeys = $("#chkExportApiKeys");
   if (btnExport) {
     btnExport.onclick = async () => {
       try {
-        const res = await api("/api/backup/export");
+        const includeKeys = Boolean(chkExportKeys?.checked);
+        const res = await api(`/api/backup/export?includeKeys=${includeKeys ? "true" : "false"}`);
         const blob = new Blob([JSON.stringify(res.backup, null, 2)], { type: "application/json" });
         const a = document.createElement("a");
         a.href = URL.createObjectURL(blob);
         a.download = res.filename || "oi-sniper-backup.json";
         a.click();
         URL.revokeObjectURL(a.href);
-        toast("Backup exported", "success", "All settings, trades, and history saved.");
+        toast(
+          "Backup exported",
+          "success",
+          includeKeys ? "Backup exported with API keys included." : "Backup exported (API keys stripped by default)."
+        );
       } catch (err) {
         toast("Export failed", "error", err.message);
+      }
+    };
+  }
+
+  const btnCopyPreset = $("#btnCopyPreset");
+  if (btnCopyPreset) {
+    btnCopyPreset.onclick = async () => {
+      try {
+        const cleanSettings = collectSettings();
+        const hash = createPresetHash(cleanSettings);
+        const url = `${window.location.origin}${window.location.pathname}#preset=${hash}`;
+        await navigator.clipboard.writeText(url);
+        toast("Preset link copied", "success", "Sharable URL copied to clipboard (API keys stripped).");
+      } catch (err) {
+        toast("Copy failed", "error", err.message);
       }
     };
   }
@@ -2114,6 +2433,14 @@ function setupBackupUi() {
     fileInput.onchange = async () => {
       const file = fileInput.files?.[0];
       if (!file) return;
+      if (
+        !confirm(
+          "Importing a backup will restore settings, trades, and logs into your database, replacing current unsaved state. Do you want to proceed?"
+        )
+      ) {
+        fileInput.value = "";
+        return;
+      }
       try {
         const text = await file.text();
         const json = JSON.parse(text);
@@ -2385,7 +2712,7 @@ function setupExchangeUi() {
       $("#wizardInstructions").textContent = "Create an API Key on Binance with 'Enable Futures' checked. DO NOT check 'Enable Withdrawals'.";
     } else if (venueId === "bybit") {
       $("#wizardTitle").textContent = "Connect Bybit V5 Linear";
-      $("#wizardInstructions").textContent = "Create an API Key on Bybit with Contract 'Orders & Positions' checked. Leave Withdrawals UNCHECKED.";
+      $("#wizardInstructions").textContent = "Create an API Key on Bybit with Contract 'Orders & Positions' checked. Leave Withdrawals UNCHECKED. Note: Bybit API keys without IP binding expire after 3 months. For 24/7 bots, use a static/residential IP or remember to regenerate keys before expiration.";
     } else if (venueId === "gate") {
       $("#wizardTitle").textContent = "Connect Gate.io USDT Futures";
       $("#wizardInstructions").textContent = "Create an API Key on Gate.io with 'Futures trading' enabled. DO NOT check 'Withdraw' or 'Wallet' write permissions.";
@@ -2496,13 +2823,40 @@ function setupExchangeUi() {
 // Live tick and status subscriptions
 onLiveTick((tick) => {
   if (tick.coinglassStale) {
-    setNotice({ kind: "stale", message: "CoinGlass data is older than 20s. New entries paused." });
-  } else if (tick.stopNewEntries) {
-    setNotice({ kind: "offline", message: "CoinGlass feed offline. Stop-new-entries safety gate active." });
-  } else if (isLeaderTab()) {
-    if (activeNotice?.kind === "stale" || activeNotice?.kind === "offline") {
-      setNotice(null);
-    }
+    setBanner("stale", { level: "warn", message: "CoinGlass data is older than 20s. New trade entries paused." });
+    notificationManager.handleStale(true, 20);
+  } else {
+    clearBanner("stale");
+  }
+
+  if (tick.stopNewEntries) {
+    setBanner("offline", { level: "warn", message: "CoinGlass feed offline. Stop-new-entries safety gate active." });
+  } else {
+    clearBanner("offline");
+  }
+
+  if (tick.exchangeError || state.exchangeError) {
+    setBanner("exchange-error", {
+      level: "danger",
+      message: `Exchange error: ${tick.exchangeError || state.exchangeError}. Live entries paused.`,
+    });
+  } else {
+    clearBanner("exchange-error");
+  }
+
+  const activeExchange = state.settings?.live?.exchange || state.settings?.exchange;
+  if (state.settings?.mode === "live" && activeExchange === "mexc" && state.mexcUnavailable) {
+    setBanner("mexc-unavailable", {
+      level: "warn",
+      message: "Futures order API unavailable at MEXC. Paper mode only.",
+    });
+  } else {
+    clearBanner("mexc-unavailable");
+  }
+
+  notificationManager.handlePositions(tick.positions || state.positions);
+  if (tick.running !== undefined) {
+    notificationManager.handleRunningState(tick.running, tick.meta?.stopReason || state.meta?.stopReason);
   }
 
   if (!isLeaderTab()) {
@@ -2516,17 +2870,63 @@ onLiveTick((tick) => {
 
 onStatusChange((status) => {
   if (status.kind === "secondary") {
-    setNotice(status);
+    setBanner("secondary", {
+      level: "warn",
+      message: status.message || "Bot is actively running in another tab. This tab is in Read-Only mode.",
+      kind: "secondary",
+    });
   } else if (status.kind === "leader") {
-    if (activeNotice?.kind === "secondary") setNotice(null);
+    clearBanner("secondary");
     toast("Leader active", "success", "This tab is managing the trading engine.");
-  } else if (["throttled", "unsupported-browser", "update-required", "kill-switch", "worker-error"].includes(status.kind)) {
-    setNotice(status);
+  } else if (status.kind === "tab-hidden") {
+    setBanner("tab-hidden", {
+      level: "warn",
+      message: status.message || "Tab is running in background. Timers may be throttled; keep tab visible for optimal execution.",
+    });
+  } else if (status.kind === "tab-visible") {
+    clearBanner("tab-hidden");
+    clearBanner("throttled");
+  } else if (status.kind === "throttled") {
+    setBanner("throttled", {
+      level: "warn",
+      message: status.message || "Background tab throttling detected. Keep tab in focus for real-time order timing.",
+    });
+  } else if (status.kind === "kill-switch") {
+    setBanner("kill-switch", {
+      level: "danger",
+      message: status.message || "Live trading is temporarily disabled by admin.",
+    });
+  } else if (status.kind === "kill-switch-cleared") {
+    clearBanner("kill-switch");
+  } else if (status.kind === "wake-lock-lost") {
+    setBanner("wake-lock", {
+      level: "warn",
+      message: status.message || "Screen wake lock was released. Screen may sleep.",
+    });
+  } else if (status.kind === "wake-lock-rejected") {
+    setBanner("wake-lock", {
+      level: "warn",
+      message: status.message || "Screen wake lock request was rejected. Keep tab in focus to prevent sleep.",
+    });
+  } else if (status.kind === "wake-lock-active") {
+    clearBanner("wake-lock");
+  } else if (status.kind === "update-required") {
+    setBanner("update-required", {
+      level: "warn",
+      message: status.message,
+    });
+  } else if (status.kind === "worker-error") {
+    setBanner("worker-error", {
+      level: "danger",
+      message: status.message,
+    });
   }
 });
 
 initApi().then(() => {
   loadBootstrap().then(() => {
+    notificationManager.init();
+    setupOnboarding();
     setupBackupUi();
     setupExchangeUi();
     setInterval(tickClock, 1000);
@@ -2536,6 +2936,13 @@ initApi().then(() => {
       if (document.hidden) return;
       refreshDashboard();
       renderServerNotice();
+    });
+    window.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") {
+        $("#exchangeModal")?.classList.add("hidden");
+        $("#liveConfirmModal")?.classList.add("hidden");
+        $("#onboardingModal")?.classList.add("hidden");
+      }
     });
   });
 });

@@ -325,6 +325,30 @@ const server = http.createServer(async (req, res) => {
         return sendJson(res, result.ok ? 200 : 400, result);
       }
 
+      if (method === "GET" && pathname === "/api/backup/export") {
+        const includeKeys = url.searchParams.get("includeKeys") === "true";
+        const backup = engine.store.exportBackup({ includeKeys });
+        return sendJson(res, 200, {
+          ok: true,
+          backup,
+          filename: `oi-sniper-backup-${stamp()}.json`,
+        });
+      }
+
+      if (method === "POST" && pathname === "/api/backup/import") {
+        const body = await readBody(req);
+        const result = engine.store.importBackup(body);
+        engine.state = engine.store.state;
+        return sendJson(res, 200, { ok: true, ...result });
+      }
+
+      if (method === "POST" && pathname === "/api/status-config") {
+        const body = await readBody(req);
+        const { liveEnabled = true, message = "" } = body || {};
+        engine.setStatusConfig({ liveEnabled, message });
+        return sendJson(res, 200, { ok: true, liveEnabled: engine.liveEnabled });
+      }
+
       return sendJson(res, 404, { ok: false, error: "not-found" });
     }
 

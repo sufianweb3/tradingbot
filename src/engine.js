@@ -105,6 +105,8 @@ export class Engine {
     this.paperExecutor = new PaperExecutor(this);
     this.liveExecutor = new LiveExecutor(this);
     this.killSwitchActive = false;
+    this.liveEnabled = true;
+    this.statusMessage = "";
     this._lastReconcileAt = 0;
   }
 
@@ -116,9 +118,20 @@ export class Engine {
     this.liveExecutor.setAdapter(adapter);
   }
 
+  setStatusConfig({ liveEnabled = true, message = "" } = {}) {
+    this.liveEnabled = Boolean(liveEnabled);
+    this.statusMessage = String(message || "");
+    if (!this.liveEnabled) {
+      this.log("warn", `Live trading disabled by status.json: ${this.statusMessage || "Kill switch active"}`);
+    }
+  }
+
   async setMode(newMode) {
     const target = newMode === "live" ? "live" : "paper";
     if (target === "live") {
+      if (this.liveEnabled === false) {
+        return { ok: false, error: "Cannot switch to Live: live trading is disabled by status configuration." };
+      }
       if (!this.liveExecutor.adapter) {
         return { ok: false, error: "Cannot switch to Live: no exchange connected." };
       }
@@ -412,8 +425,13 @@ export class Engine {
         volUsd24h: toNum(c?.volUsd24h, 0) ?? 0,
         oiChange24h: toNum(c?.oiChange24h),
         volChange24h: toNum(c?.volChange24h),
-        priceChange1h: toNum(c?.priceChange1h),
+        priceChange5m: toNum(c?.priceChange5m ?? c?.priceChange?.["5m"]),
+        priceChange1h: toNum(c?.priceChange1h ?? c?.priceChange?.["1h"]),
         priceChange24h: toNum(c?.priceChange24h),
+        priceChange: {
+          "5m": toNum(c?.priceChange5m ?? c?.priceChange?.["5m"]),
+          "1h": toNum(c?.priceChange1h ?? c?.priceChange?.["1h"]),
+        },
         funding: toNum(c?.funding),
         logo: typeof c?.logo === "string" ? c.logo : null,
       });
@@ -663,8 +681,10 @@ export class Engine {
         vol: coin.vol,
         oiUsd: coin.oiUsd,
         volUsd24h: coin.volUsd24h,
+        priceChange5m: coin.priceChange5m,
         priceChange1h: coin.priceChange1h,
         priceChange24h: coin.priceChange24h,
+        priceChange: coin.priceChange,
         funding: coin.funding,
         venue: entry?.venueName || null,
         venueKey: entry?.venue || null,
@@ -1176,7 +1196,7 @@ export class Engine {
       tpMaxPercent: p.tpMaxPercent,
       tp1ClosePercent: p.tp1ClosePercent,
       trailingDistancePercent: p.trailingDistancePercent,
-      criteria: evaluation.checks.map((c) => ({ ...c })),
+      criteria: Array.isArray(evaluation?.checks) ? evaluation.checks.map((c) => ({ ...c })) : [],
       signal: {
         oi: { ...coin.oi },
         vol: { ...coin.vol },
@@ -1387,6 +1407,34 @@ export class Engine {
     if (pos.qty <= 1e-12) this._finalize(pos, reason);
   }
 
+  _updateTrailing(pos, currentPrice) {
+    if (!pos) return;
+    if (pos.peakPrice === undefined || pos.peakPrice === null) {
+      pos.peakPrice = pos.entryPrice ?? currentPrice;
+    }
+    if (pos.trailingEnabled === undefined) {
+      pos.trailingEnabled = true;
+    }
+    if (pos.trailingStart === undefined) {
+      pos.trailingStart = "immediate";
+    }
+    if (!pos.trailMove) {
+      const lev = pos.leverage || 1;
+      const dist = pos.trailingDistancePercent || 20;
+      pos.trailMove = (dist / lev) / 100;
+    }
+    const action = positionAction(pos, currentPrice);
+    if (action?.next) {
+      if (action.next.peakPrice !== undefined) pos.peakPrice = action.next.peakPrice;
+      if (action.next.trailingActive !== undefined) pos.trailingActive = action.next.trailingActive;
+      if (action.next.trailStopPrice !== undefined) {
+        pos.trailStopPrice = action.next.trailStopPrice;
+        pos.slPrice = action.next.trailStopPrice;
+      }
+      pos.trailingStopPrice = pos.trailStopPrice;
+    }
+  }
+
   _closePosition(pos, price, reason, { force = false } = {}) {
     if (!pos || pos.status !== "open") return null;
     const remaining = toNum(pos.qty, 0);
@@ -1461,6 +1509,13 @@ export class Engine {
       trailingStart: pos.trailingStart,
       criteria: pos.criteria,
       signal: pos.signal,
+      orderIds: pos.orderIds || [],
+      fills: pos.fills || [],
+      feesExchange: pos.feesExchange || 0,
+      fundingExchange: pos.fundingExchange || 0,
+      protection: pos.protection || null,
+      exchangeSymbol: pos.exchangeSymbol || pos.symbol,
+      clientIdPrefix: pos.clientIdPrefix || null,
     };
 
     pos.status = "closed";
