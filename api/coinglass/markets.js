@@ -1,5 +1,7 @@
 import { cgFetch } from "../../src/coinglass.js";
 
+export const config = { maxDuration: 10 };
+
 /**
  * Same-origin CoinGlass page proxy for the browser worker.
  *
@@ -25,7 +27,7 @@ export default async function handler(req, res) {
     `&order=desc&keyword=&pageNum=${page}&pageSize=100&ex=all&tags=crypto`;
 
   try {
-    const data = await cgFetch(target);
+    const data = await cgFetch(target, { retries: 1, timeoutMs: 8000 });
     res.status(200).json(data);
   } catch (err) {
     res.status(502).json({ ok: false, error: err?.message || "coinglass-proxy-failed" });
