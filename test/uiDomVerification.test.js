@@ -1,7 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
+import { Engine } from "../src/engine.js";
+import { saveCredentials } from "../src/vault.js";
+import { handleRpcRequest } from "../web/routes.js";
 
 const ROOT = path.resolve(".");
 const cssPath = path.join(ROOT, "public/styles.css");
@@ -135,4 +139,100 @@ test("DOM Verification: Zero em and en dashes in public/ and src/", () => {
     const content = fs.readFileSync(file, "utf8");
     assert.doesNotMatch(content, /[\u2013\u2014]/, `${path.basename(file)} must not contain em or en dashes`);
   }
+});
+
+test("DOM Verification: Exchange selector synchronization across modal, topbar, settings dropdown, and routes", () => {
+  const app = fs.readFileSync(appPath, "utf8");
+  const css = fs.readFileSync(cssPath, "utf8");
+  const routes = fs.readFileSync(routesPath, "utf8");
+  const server = fs.readFileSync(serverPath, "utf8");
+
+  assert.match(routes, /case\s+["']\/api\/exchange\/select["']:/, "routes.js must implement /api/exchange/select");
+  assert.match(server, /pathname\s*===\s*["']\/api\/exchange\/select["']/, "server.js must implement /api/exchange/select");
+  assert.match(app, /async\s+function\s+selectActiveExchange/, "app.js must define selectActiveExchange");
+  assert.match(app, /btn-select-exchange/, "app.js must render .btn-select-exchange buttons in #exchangeModal");
+  assert.match(app, /exchange-active-badge/, "app.js must render .exchange-active-badge on the active exchange card");
+  assert.match(css, /\.exchange-card-actions\s*\{/, "styles.css must define .exchange-card-actions");
+  assert.match(css, /\.exchange-active-badge\s*\{/, "styles.css must define .exchange-active-badge");
+});
+
+test("Route Verification: POST /api/exchange/select updates settings.live.exchange and syncs liveExecutor adapter", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "oi-exchange-select-"));
+  const engine = new Engine({ dataDir: dir });
+
+  const map = new Map();
+  const mockStore = {
+    state: engine.state,
+    async flush() {},
+    async getVaultKey(key) {
+      return map.get(key) || null;
+    },
+    async putVaultKey(key, data) {
+      map.set(key, { ...data, key });
+      return true;
+    },
+    async deleteVaultKey(key) {
+      map.delete(key);
+      return true;
+    },
+    async listVaultKeys() {
+      return Array.from(map.values());
+    },
+  };
+
+  // Save credentials for gate in the vault
+  await saveCredentials("gate", { apiKey: "gate-key-123456", secret: "gate-secret-123456" }, { idbStore: mockStore });
+
+  // 1. Select gate (which has stored credentials)
+  const resGate = await handleRpcRequest(
+    {
+      method: "POST",
+      path: "/api/exchange/select",
+      body: { venue: "gate" },
+    },
+    {
+      engine,
+      store: mockStore,
+    }
+  );
+  assert.equal(resGate.status, 200);
+  assert.equal(resGate.data.ok, true);
+  assert.equal(resGate.data.activeVenue, "gate");
+  assert.equal(resGate.data.connected, true);
+  assert.equal(engine.state.settings.live.exchange, "gate");
+  assert.equal(engine.liveExecutor.adapter?.id, "gate");
+
+  // 2. Select binance (no stored credentials) -> updates exchange setting and clears adapter
+  const resBinance = await handleRpcRequest(
+    {
+      method: "POST",
+      path: "/api/exchange/select",
+      body: { venue: "binance" },
+    },
+    {
+      engine,
+      store: mockStore,
+    }
+  );
+  assert.equal(resBinance.status, 200);
+  assert.equal(resBinance.data.ok, true);
+  assert.equal(resBinance.data.activeVenue, "binance");
+  assert.equal(resBinance.data.connected, false);
+  assert.equal(engine.state.settings.live.exchange, "binance");
+  assert.equal(engine.liveExecutor.adapter, null);
+
+  // 3. Reject unsupported venue
+  const resBad = await handleRpcRequest(
+    {
+      method: "POST",
+      path: "/api/exchange/select",
+      body: { venue: "kraken" },
+    },
+    {
+      engine,
+      store: mockStore,
+    }
+  );
+  assert.equal(resBad.status, 400);
+  assert.equal(resBad.data.ok, false);
 });

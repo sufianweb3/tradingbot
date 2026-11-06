@@ -22,6 +22,28 @@ function stamp() {
   return new Date().toISOString().replace(/[:.]/g, "-").replace("T", "_").slice(0, 19);
 }
 
+async function syncLiveAdapterForVenue(venue, { engine, store }) {
+  const v = String(venue || "").toLowerCase().trim();
+  const creds = await getCredentials(v, { idbStore: store });
+  if (creds && creds.apiKey && creds.secret) {
+    const adapter = createVenueAdapter(v, {
+      apiKey: creds.apiKey,
+      secret: creds.secret,
+      passphrase: creds.passphrase,
+    });
+    engine.setLiveAdapter(adapter);
+    if (engine.state.settings?.mode === "live") {
+      await engine.liveExecutor.init();
+    }
+    return true;
+  }
+  engine.setLiveAdapter(null);
+  if (engine.state.settings?.mode === "live") {
+    await engine.setMode("paper");
+  }
+  return false;
+}
+
 export async function handleRpcRequest({ path, method = "GET", body = {}, query = {} }, { engine, store, cgClient, bootedAt }) {
   const pathname = path.split("?")[0];
 
@@ -207,8 +229,13 @@ export async function handleRpcRequest({ path, method = "GET", body = {}, query 
       if (!patch || typeof patch !== "object") {
         return { status: 400, data: { ok: false, error: "invalid-settings" } };
       }
+      const prevExchange = engine.state.settings?.live?.exchange;
       const result = engine.updateSettings(patch);
-      await store.flush();
+      const nextExchange = engine.state.settings?.live?.exchange;
+      if (nextExchange && nextExchange !== prevExchange) {
+        await syncLiveAdapterForVenue(nextExchange, { engine, store });
+      }
+      if (store) await store.flush();
       return {
         status: 200,
         data: { ok: true, ...result, stats: engine.getStats() },
@@ -371,14 +398,50 @@ export async function handleRpcRequest({ path, method = "GET", body = {}, query 
 
       await saveCredentials(venue, { apiKey, secret, passphrase }, { idbStore: store });
       engine.setLiveAdapter(adapter);
+      engine.updateSettings({
+        live: {
+          ...(engine.state.settings?.live || {}),
+          exchange: adapter.id,
+        },
+      });
+      if (store) await store.flush();
       return {
         status: 200,
         data: {
           ok: true,
           venue: adapter.id,
+          activeVenue: adapter.id,
           canTrade: true,
           canWithdraw: false,
           maskedKey: maskKey(apiKey),
+          settings: engine.publicSettings(),
+        },
+      };
+    }
+
+    case "/api/exchange/select": {
+      if (method !== "POST") return { status: 405, data: { ok: false, error: "method-not-allowed" } };
+      const venue = String(body?.venue || "").toLowerCase().trim();
+      const supported = SUPPORTED_VENUES.find((v) => v.id === venue);
+      if (!supported) {
+        return { status: 400, data: { ok: false, error: `Unsupported exchange venue: '${venue}'` } };
+      }
+      engine.updateSettings({
+        live: {
+          ...(engine.state.settings?.live || {}),
+          exchange: supported.id,
+        },
+      });
+      const connected = await syncLiveAdapterForVenue(supported.id, { engine, store });
+      if (store) await store.flush();
+      return {
+        status: 200,
+        data: {
+          ok: true,
+          activeVenue: supported.id,
+          connected,
+          mode: engine.state.settings?.mode || "paper",
+          settings: engine.publicSettings(),
         },
       };
     }

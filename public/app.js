@@ -596,6 +596,7 @@ function markDirty() {
 }
 
 SETTINGS_ROOT.addEventListener("input", (e) => {
+  if (e.target.matches('[data-live-setting="exchange"]')) return;
   if (e.target.matches("[data-setting], [data-live-setting], [data-profile-setting], [data-f], #profileEnabled")) {
     if (e.target.matches('[data-profile-setting="sizingMode"], [data-setting="sizingMode"]')) updateVisibility();
     if (e.target.matches('[data-f="enabled"]')) {
@@ -606,6 +607,10 @@ SETTINGS_ROOT.addEventListener("input", (e) => {
   }
 });
 SETTINGS_ROOT.addEventListener("change", (e) => {
+  if (e.target.matches('[data-live-setting="exchange"]')) {
+    selectActiveExchange(e.target.value);
+    return;
+  }
   if (e.target.matches("[data-setting], [data-live-setting], [data-profile-setting], [data-f], #profileEnabled")) {
     if (e.target.matches('[data-profile-setting="sizingMode"], [data-setting="sizingMode"]')) updateVisibility();
     if (e.target.matches('[data-f="enabled"]')) {
@@ -1979,6 +1984,7 @@ async function saveSettings() {
     state.stats = res.stats || state.stats;
     localStorage.setItem("oiSniperSettings", JSON.stringify(state.settings));
     renderSettingsForm();
+    renderModeState();
     toast(res.reset ? "Settings saved: account reset" : "Settings saved", "success", res.reset ? "Total fund changed, so paper history was cleared." : "New trades use the new rules immediately.");
     await refreshLive();
     await refreshMarkets();
@@ -2665,15 +2671,58 @@ function renderModeState() {
   const panicBtn = $("#btnPanic");
   if (panicBtn) panicBtn.classList.toggle("hidden", !isLive);
 
+  const rawEx = state.settings?.live?.exchange || "bybit";
+  const activeEx = rawEx.toUpperCase();
   const exchangePill = $("#exchangePill");
   if (exchangePill) {
-    const activeEx = (state.settings?.live?.exchange || "bybit").toUpperCase();
     $("#exchangePillText").textContent = `Exchange: ${activeEx}`;
+  }
+  const confirmExEl = $("#confirmExchangeName");
+  if (confirmExEl) {
+    confirmExEl.textContent = activeEx;
+  }
+  const exchangeSelect = $('[data-live-setting="exchange"]');
+  if (exchangeSelect && exchangeSelect.value !== rawEx) {
+    exchangeSelect.value = rawEx;
   }
 
   const killPill = $("#killSwitchPill");
   if (killPill) {
     killPill.classList.toggle("hidden", !state.killSwitchActive);
+  }
+}
+
+let refreshExchangeCardsFn = null;
+
+async function selectActiveExchange(venueId, { silent = false } = {}) {
+  const targetVenue = String(venueId || "").toLowerCase().trim();
+  if (!targetVenue) return;
+  try {
+    const res = await api("/api/exchange/select", {
+      method: "POST",
+      body: { venue: targetVenue },
+    });
+    const activeVenue = res.activeVenue || targetVenue;
+    if (!state.settings) state.settings = {};
+    if (!state.settings.live) state.settings.live = {};
+    state.settings.live.exchange = activeVenue;
+    if (res.mode) state.settings.mode = res.mode;
+    try {
+      localStorage.setItem("oiSniperSettings", JSON.stringify(state.settings));
+    } catch {
+      /* ignore quota errors */
+    }
+    renderModeState();
+    if (refreshExchangeCardsFn && !$("#exchangeModal")?.classList.contains("hidden")) {
+      await refreshExchangeCardsFn();
+    }
+    if (!silent) {
+      const displayName = VENUE_NAMES[activeVenue] || activeVenue.toUpperCase();
+      toast("Active exchange updated", "success", `Execution exchange set to ${displayName}.`);
+    }
+  } catch (err) {
+    renderModeState();
+    toast("Exchange selection failed", "error", err.message);
   }
 }
 
@@ -2820,6 +2869,15 @@ function setupExchangeUi() {
           statusText = v.tier.toUpperCase();
         }
 
+        let selectBtn = "";
+        if (v.isActive) {
+          selectBtn = `<span class="exchange-active-badge">✓ Active</span>`;
+        } else if (v.liveSupported) {
+          selectBtn = `<button class="btn small ghost btn-select-exchange" data-venue="${v.id}" type="button">Set Active</button>`;
+        } else {
+          selectBtn = `<span></span>`;
+        }
+
         let actionBtn = "";
         if (v.connected) {
           actionBtn = `<button class="btn small danger-ghost btn-disconnect" data-venue="${v.id}" type="button">Disconnect</button>`;
@@ -2837,7 +2895,8 @@ function setupExchangeUi() {
           <div class="exchange-meta">
             ${v.connected ? `Key: <code>${v.maskedKey}</code>` : (v.liveSupported ? "USDT-M / Linear Futures" : "Adapter in development")}
           </div>
-          <div style="display:flex; justify-content:flex-end;">
+          <div class="exchange-card-actions">
+            ${selectBtn}
             ${actionBtn}
           </div>
         `;
@@ -2845,6 +2904,9 @@ function setupExchangeUi() {
         grid.appendChild(card);
       }
 
+      $$(".btn-select-exchange").forEach((btn) => {
+        btn.onclick = () => selectActiveExchange(btn.dataset.venue);
+      });
       $$(".btn-connect").forEach((btn) => {
         btn.onclick = () => openWizard(btn.dataset.venue);
       });
@@ -2865,6 +2927,7 @@ function setupExchangeUi() {
       grid.innerHTML = `<div class="wizard-alert danger">Failed to load exchange status: ${err.message}</div>`;
     }
   }
+  refreshExchangeCardsFn = renderExchangeCards;
 
   function openWizard(venueId) {
     selectedVenue = venueId;
@@ -2980,7 +3043,17 @@ function setupExchangeUi() {
           body: { venue: selectedVenue, apiKey, secret, passphrase },
         });
 
-        toast(`Connected to ${selectedVenue.toUpperCase()}`, "success", `Keys encrypted in WebCrypto vault (${res.maskedKey}).`);
+        const activeVenue = res.activeVenue || res.venue || selectedVenue;
+        if (!state.settings) state.settings = {};
+        if (!state.settings.live) state.settings.live = {};
+        state.settings.live.exchange = activeVenue;
+        try {
+          localStorage.setItem("oiSniperSettings", JSON.stringify(state.settings));
+        } catch {
+          /* ignore quota errors */
+        }
+
+        toast(`Connected to ${activeVenue.toUpperCase()}`, "success", `Keys encrypted in WebCrypto vault (${res.maskedKey}).`);
         $("#wizardBox")?.classList.add("hidden");
         await renderExchangeCards();
         renderModeState();

@@ -12,6 +12,14 @@ import { attachAiTradeLogger } from "../src/aiDataset.js";
 import { logExportFilename, streamBotLogExport } from "../src/logExport.js";
 import { renderCsv, renderJson, renderReport } from "../src/report.js";
 import { now, toNum } from "../src/util.js";
+import {
+  saveCredentials,
+  getCredentials,
+  removeCredentials,
+  listVaultEntries,
+  maskKey,
+} from "../src/vault.js";
+import { createVenueAdapter, SUPPORTED_VENUES } from "../src/venues/index.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
@@ -146,6 +154,35 @@ engine.init().catch((err) => {
   console.error("[engine] init error:", err.message);
 });
 
+async function syncLiveAdapterForVenue(venue) {
+  const creds = await getCredentials(venue, { idbStore: engine.store });
+  if (creds?.apiKey && creds?.secret) {
+    try {
+      const adapter = createVenueAdapter(venue, {
+        apiKey: creds.apiKey,
+        secret: creds.secret,
+        passphrase: creds.passphrase,
+      });
+      engine.setLiveAdapter(adapter);
+      if (engine.state.settings?.mode === "live" && engine.liveExecutor) {
+        try {
+          await engine.liveExecutor.init();
+        } catch (err) {
+          console.warn(`[server] Live executor init warning for ${venue}:`, err?.message);
+        }
+      }
+      return true;
+    } catch (err) {
+      console.warn(`[server] Failed to create adapter for ${venue}:`, err?.message);
+    }
+  }
+  engine.setLiveAdapter(null);
+  if (engine.state.settings?.mode === "live") {
+    await engine.setMode("paper");
+  }
+  return false;
+}
+
 // Passive AI dataset logger
 let aiLogger = { dispose() {} };
 try {
@@ -279,8 +316,246 @@ const server = http.createServer(async (req, res) => {
         const body = await readBody(req);
         const patch = body?.settings && typeof body.settings === "object" ? body.settings : body;
         if (!patch || typeof patch !== "object") return sendJson(res, 400, { ok: false, error: "invalid-settings" });
+        const prevExchange = engine.state.settings?.live?.exchange || "bybit";
         const result = engine.updateSettings(patch);
+        const nextExchange = engine.state.settings?.live?.exchange || "bybit";
+        if (nextExchange !== prevExchange) {
+          await syncLiveAdapterForVenue(nextExchange);
+        }
         return sendJson(res, 200, { ok: true, ...result, stats: engine.getStats() });
+      }
+
+      if (method === "GET" && pathname === "/api/exchange/status") {
+        const entries = await listVaultEntries({ idbStore: engine.store });
+        const activeVenue = engine.state.settings?.live?.exchange || "bybit";
+        const venuesStatus = SUPPORTED_VENUES.map((v) => {
+          const connectedEntry = entries.find((e) => e.venue === v.id);
+          return {
+            ...v,
+            connected: Boolean(connectedEntry),
+            maskedKey: connectedEntry?.maskedKey || null,
+            updatedAt: connectedEntry?.updatedAt || null,
+            isActive: v.id === activeVenue,
+          };
+        });
+        return sendJson(res, 200, {
+          ok: true,
+          mode: engine.state.settings?.mode || "paper",
+          activeVenue,
+          venues: venuesStatus,
+        });
+      }
+
+      if (method === "POST" && pathname === "/api/exchange/select") {
+        const body = await readBody(req);
+        const venue = String(body?.venue || "").toLowerCase().trim();
+        const supported = SUPPORTED_VENUES.find((v) => v.id === venue);
+        if (!supported) {
+          return sendJson(res, 400, { ok: false, error: `Unsupported exchange venue: '${venue}'` });
+        }
+        engine.updateSettings({
+          live: {
+            ...(engine.state.settings?.live || {}),
+            exchange: supported.id,
+          },
+        });
+        const connected = await syncLiveAdapterForVenue(supported.id);
+        return sendJson(res, 200, {
+          ok: true,
+          activeVenue: supported.id,
+          connected,
+          mode: engine.state.settings?.mode || "paper",
+          settings: engine.publicSettings(),
+        });
+      }
+
+      if (method === "POST" && pathname === "/api/exchange/connect") {
+        const body = await readBody(req);
+        const { venue, apiKey, secret, passphrase } = body || {};
+        if (!venue || !apiKey || !secret) {
+          return sendJson(res, 400, { ok: false, error: "missing-venue-or-credentials" });
+        }
+        let adapter;
+        try {
+          adapter = createVenueAdapter(venue, { apiKey, secret, passphrase });
+        } catch (err) {
+          return sendJson(res, 400, { ok: false, error: err.message });
+        }
+        const val = await adapter.validateKey({ apiKey, secret, passphrase });
+        if (!val.ok) {
+          return sendJson(res, 400, {
+            ok: false,
+            canTrade: false,
+            canWithdraw: Boolean(val.canWithdraw),
+            error: val.error || "Key validation failed",
+          });
+        }
+        await saveCredentials(venue, { apiKey, secret, passphrase }, { idbStore: engine.store });
+        engine.setLiveAdapter(adapter);
+        engine.updateSettings({
+          live: {
+            ...(engine.state.settings?.live || {}),
+            exchange: adapter.id,
+          },
+        });
+        return sendJson(res, 200, {
+          ok: true,
+          venue: adapter.id,
+          activeVenue: adapter.id,
+          canTrade: true,
+          canWithdraw: false,
+          maskedKey: maskKey(apiKey),
+          settings: engine.publicSettings(),
+        });
+      }
+
+      if (method === "POST" && pathname === "/api/exchange/test") {
+        const body = await readBody(req);
+        const venue = body?.venue || engine.state.settings?.live?.exchange || "bybit";
+        let apiKey = body?.apiKey;
+        let secret = body?.secret;
+        let passphrase = body?.passphrase;
+        if (!apiKey || !secret) {
+          const creds = await getCredentials(venue, { idbStore: engine.store });
+          if (!creds) {
+            return sendJson(res, 400, { ok: false, error: `No stored credentials found for ${venue}` });
+          }
+          apiKey = creds.apiKey;
+          secret = creds.secret;
+          passphrase = creds.passphrase;
+        }
+        let adapter;
+        try {
+          adapter = createVenueAdapter(venue, { apiKey, secret, passphrase });
+        } catch (err) {
+          return sendJson(res, 400, { ok: false, error: err.message });
+        }
+        const val = await adapter.validateKey({ apiKey, secret, passphrase });
+        if (!val.ok) {
+          return sendJson(res, 400, {
+            ok: false,
+            venue,
+            canTrade: false,
+            canWithdraw: Boolean(val.canWithdraw),
+            error: val.error,
+          });
+        }
+        let balance = { availableUsdt: 0, equityUsdt: 0 };
+        try {
+          balance = await adapter.getBalance();
+        } catch (err) {
+          return sendJson(res, 400, { ok: false, venue, error: `Balance check failed: ${err.message}` });
+        }
+        let instruments = [];
+        try {
+          instruments = await adapter.getInstruments();
+        } catch (err) {
+          console.warn(`[server] Instruments load warning for ${venue}:`, err?.message);
+        }
+        let modeCheck = { oneWay: true, isolated: true };
+        try {
+          modeCheck = await adapter.ensureAccountMode();
+        } catch (err) {
+          console.warn(`[server] Account mode check warning for ${venue}:`, err?.message);
+        }
+        let capabilities = { trading: true };
+        let capabilityProbe = null;
+        if (typeof adapter.probeCapability === "function") {
+          try {
+            capabilityProbe = await adapter.probeCapability();
+          } catch (err) {
+            capabilityProbe = { ok: false, trading: false, futuresOrderAvailable: false, message: err.message };
+          }
+        }
+        if (typeof adapter.capabilities === "function") {
+          capabilities = adapter.capabilities();
+        }
+        return sendJson(res, 200, {
+          ok: true,
+          venue,
+          canTrade: true,
+          canWithdraw: false,
+          balance,
+          instrumentsCount: instruments.length,
+          accountMode: modeCheck,
+          capabilities,
+          capabilityProbe,
+        });
+      }
+
+      if (method === "POST" && pathname === "/api/exchange/disconnect") {
+        const body = await readBody(req);
+        const venue = body?.venue;
+        if (!venue) return sendJson(res, 400, { ok: false, error: "missing-venue" });
+        await removeCredentials(venue, { idbStore: engine.store });
+        if (engine.state.settings?.live?.exchange === venue && engine.state.settings?.mode === "live") {
+          await engine.setMode("paper");
+        }
+        return sendJson(res, 200, { ok: true, venue });
+      }
+
+      if (method === "POST" && pathname === "/api/mode") {
+        const body = await readBody(req);
+        const targetMode = body?.mode === "live" ? "live" : "paper";
+        if (targetMode === "live") {
+          const conf = String(body?.confirmation || "").trim();
+          if (conf !== "I UNDERSTAND" && conf !== "LIVE") {
+            return sendJson(res, 400, {
+              ok: false,
+              error: "Switching to Live requires typing 'I UNDERSTAND' to confirm real-money risk.",
+            });
+          }
+          const activeVenue = engine.state.settings?.live?.exchange || "bybit";
+          const creds = await getCredentials(activeVenue, { idbStore: engine.store });
+          if (!creds) {
+            return sendJson(res, 400, {
+              ok: false,
+              error: `Cannot switch to Live: no credentials found for ${activeVenue}. Connect exchange first.`,
+            });
+          }
+          const adapter = createVenueAdapter(activeVenue, {
+            apiKey: creds.apiKey,
+            secret: creds.secret,
+            passphrase: creds.passphrase,
+          });
+          const val = await adapter.validateKey(creds);
+          if (!val.ok) {
+            return sendJson(res, 400, {
+              ok: false,
+              error: `Connection test failed for ${activeVenue}: ${val.error}`,
+            });
+          }
+          if (typeof adapter.probeCapability === "function") {
+            try {
+              await adapter.probeCapability();
+            } catch {
+              /* Handled via capabilities() check below */
+            }
+          }
+          const caps = typeof adapter.capabilities === "function" ? adapter.capabilities() : { trading: true };
+          if (!caps.trading) {
+            return sendJson(res, 400, {
+              ok: false,
+              error: caps.reason || "Futures order API unavailable at MEXC",
+            });
+          }
+          engine.setLiveAdapter(adapter);
+        }
+        const result = await engine.setMode(targetMode);
+        return sendJson(res, result.ok ? 200 : 400, result);
+      }
+
+      if (method === "POST" && pathname === "/api/kill-switch") {
+        const body = await readBody(req);
+        const active = body?.active !== undefined ? Boolean(body.active) : !engine.killSwitchActive;
+        engine.killSwitchActive = active;
+        engine.log(active ? "warn" : "info", `Kill switch ${active ? "ACTIVATED (all new entries stopped)" : "DEACTIVATED"}`);
+        return sendJson(res, 200, { ok: true, active: engine.killSwitchActive });
+      }
+
+      if (method === "POST" && pathname === "/api/panic") {
+        const result = await engine.activeExecutor.panic();
+        return sendJson(res, 200, { ok: true, ...result });
       }
 
       if (method === "POST" && pathname === "/api/coinglass/key") {
