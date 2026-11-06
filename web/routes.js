@@ -291,6 +291,42 @@ export async function handleRpcRequest({ path, method = "GET", body = {}, query 
       };
     }
 
+    case "/api/eqe": {
+      const symbol = body?.symbol || urlObj.searchParams.get("symbol") || "BTC";
+      const side = body?.side || urlObj.searchParams.get("side") || "long";
+      const notional = body?.notional ?? urlObj.searchParams.get("notional");
+      const res = await engine.evaluateSymbolEqe(symbol, side, notional, body?.book || null);
+      return { status: 200, data: res };
+    }
+
+    case "/api/route": {
+      const symbol = body?.symbol || urlObj.searchParams.get("symbol") || "BTC";
+      const side = body?.side || urlObj.searchParams.get("side") || "long";
+      const notional = body?.notional ?? urlObj.searchParams.get("notional");
+      const res = await engine.evaluateSymbolRoute(symbol, side, notional, body?.candidates || null);
+      return { status: 200, data: res };
+    }
+
+    case "/api/speed": {
+      return { status: 200, data: { ok: true, ...engine.getSpeedTelemetry() } };
+    }
+
+    case "/api/venues/health": {
+      return { status: 200, data: { ok: true, venues: engine.getVenuesHealth() } };
+    }
+
+    case "/api/reconcile": {
+      if (method !== "POST") return { status: 405, data: { ok: false, error: "method-not-allowed" } };
+      const res = await engine.liveExecutor.reconcile();
+      return { status: 200, data: { ok: true, ...res } };
+    }
+
+    case "/api/preflight": {
+      if (method !== "POST") return { status: 405, data: { ok: false, error: "method-not-allowed" } };
+      const res = await engine.runPreflight(body || {});
+      return { status: 200, data: res };
+    }
+
     case "/api/trade/open": {
       if (method !== "POST") return { status: 405, data: { ok: false, error: "method-not-allowed" } };
       if (cgClient && cgClient.status.stopNewEntries) {
@@ -573,13 +609,16 @@ export async function handleRpcRequest({ path, method = "GET", body = {}, query 
       if (method !== "POST") return { status: 405, data: { ok: false, error: "method-not-allowed" } };
       const targetMode = body?.mode === "live" ? "live" : "paper";
       if (targetMode === "live") {
-        const conf = String(body?.confirmation || "").trim();
-        if (conf !== "I UNDERSTAND" && conf !== "LIVE") {
+        const confirmed =
+          body?.confirmed === true ||
+          String(body?.confirmation || "").trim() === "LIVE" ||
+          String(body?.confirmation || "").trim() === "I UNDERSTAND";
+        if (!confirmed) {
           return {
             status: 400,
             data: {
               ok: false,
-              error: "Switching to Live requires typing 'I UNDERSTAND' to confirm real-money risk.",
+              error: "Please confirm switching to Live mode.",
             },
           };
         }

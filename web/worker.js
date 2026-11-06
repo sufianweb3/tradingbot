@@ -9,6 +9,8 @@ import { Engine } from "../src/engine.js";
 import { getCredentials } from "../src/vault.js";
 import { createVenueAdapter } from "../src/venues/index.js";
 import { CoinGlassWorkerClient } from "./cg-worker.js";
+import { DataWorkerRuntime } from "./dataWorker.js";
+import { EngineWorkerRuntime } from "./engineWorker.js";
 import { handleRpcRequest } from "./routes.js";
 import { IndexedDbStore } from "./store-idb.js";
 
@@ -18,6 +20,8 @@ const BROADCAST_NAME = "oi-sniper-bus";
 let store = null;
 let engine = null;
 let cgClient = null;
+let dataWorker = null;
+let engineWorker = null;
 let bus = null;
 let readyResolve = null;
 const readyPromise = new Promise((resolve) => {
@@ -42,9 +46,39 @@ async function boot() {
     },
   });
 
+  // Wire Dual-Worker Data <-> Engine MessageChannel pipeline (FX-60)
+  if (typeof MessageChannel !== "undefined") {
+    const channel = new MessageChannel();
+    dataWorker = new DataWorkerRuntime({
+      cgClient,
+      hub: engine.hub,
+      port: channel.port1,
+      settings: store.state?.settings || {},
+    });
+    engineWorker = new EngineWorkerRuntime({
+      engine,
+      port: channel.port2,
+    });
+  } else {
+    dataWorker = new DataWorkerRuntime({
+      cgClient,
+      hub: engine.hub,
+      settings: store.state?.settings || {},
+    });
+    engineWorker = new EngineWorkerRuntime({ engine });
+  }
+
   // Inject in-worker scraper to bypass Cloudflare block
   engine._marketData = async () => {
+    const startedAt = Date.now();
     const res = await cgClient.fetchMarkets();
+    if (dataWorker && Array.isArray(res?.coins)) {
+      dataWorker.ingestBatch(res.coins, {
+        lane: "top100",
+        startedAt,
+        fetchedInMs: res.fetchedInMs,
+      });
+    }
     engine.marketCache = {
       at: Date.now(),
       coins: res.coins,

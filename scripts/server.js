@@ -256,6 +256,43 @@ const server = http.createServer(async (req, res) => {
         return sendJson(res, 200, { ok: true, markets: engine.getMarketRows() });
       }
 
+      if ((method === "GET" || method === "POST") && pathname === "/api/eqe") {
+        const body = method === "POST" ? await readBody(req).catch(() => ({})) : {};
+        const symbol = body?.symbol || url.searchParams.get("symbol") || "BTC";
+        const side = body?.side || url.searchParams.get("side") || "long";
+        const notional = body?.notional ?? url.searchParams.get("notional");
+        const eqe = await engine.evaluateSymbolEqe(symbol, side, notional, body?.book || null);
+        return sendJson(res, 200, eqe);
+      }
+
+      if ((method === "GET" || method === "POST") && pathname === "/api/route") {
+        const body = method === "POST" ? await readBody(req).catch(() => ({})) : {};
+        const symbol = body?.symbol || url.searchParams.get("symbol") || "BTC";
+        const side = body?.side || url.searchParams.get("side") || "long";
+        const notional = body?.notional ?? url.searchParams.get("notional");
+        const route = await engine.evaluateSymbolRoute(symbol, side, notional, body?.candidates || null);
+        return sendJson(res, 200, route);
+      }
+
+      if (method === "GET" && pathname === "/api/speed") {
+        return sendJson(res, 200, { ok: true, ...engine.getSpeedTelemetry() });
+      }
+
+      if (method === "GET" && pathname === "/api/venues/health") {
+        return sendJson(res, 200, { ok: true, venues: engine.getVenuesHealth() });
+      }
+
+      if (method === "POST" && pathname === "/api/reconcile") {
+        const rec = await engine.liveExecutor.reconcile();
+        return sendJson(res, 200, { ok: true, ...rec });
+      }
+
+      if (method === "POST" && pathname === "/api/preflight") {
+        const body = await readBody(req).catch(() => ({}));
+        const pre = await engine.runPreflight(body || {});
+        return sendJson(res, 200, pre);
+      }
+
       if (method === "GET" && pathname === "/api/config") {
         return sendJson(res, 200, { ok: true, ...engine.getConfig() });
       }
@@ -498,11 +535,14 @@ const server = http.createServer(async (req, res) => {
         const body = await readBody(req);
         const targetMode = body?.mode === "live" ? "live" : "paper";
         if (targetMode === "live") {
-          const conf = String(body?.confirmation || "").trim();
-          if (conf !== "I UNDERSTAND" && conf !== "LIVE") {
+          const confirmed =
+            body?.confirmed === true ||
+            String(body?.confirmation || "").trim() === "LIVE" ||
+            String(body?.confirmation || "").trim() === "I UNDERSTAND";
+          if (!confirmed) {
             return sendJson(res, 400, {
               ok: false,
-              error: "Switching to Live requires typing 'I UNDERSTAND' to confirm real-money risk.",
+              error: "Please confirm switching to Live mode.",
             });
           }
           const activeVenue = engine.state.settings?.live?.exchange || "bybit";

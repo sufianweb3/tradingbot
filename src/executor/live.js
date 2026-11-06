@@ -8,6 +8,9 @@
 
 import { computeLevels, positionMetrics, roundLevel } from "../trading.js";
 import { now, round, toNum, uid } from "../util.js";
+import { ProtectionManager, DEFAULT_EXEC_SETTINGS } from "../core/protectionManager.js";
+import { reconcileExchangeState, runAccountPreflight, resolveUnknownOrder } from "../core/reconciler.js";
+import { verifyOrderUnitSanity, roundAndValidateQty } from "../core/units.js";
 
 export class LiveExecutor {
   constructor(engine, { adapter = null } = {}) {
@@ -18,6 +21,25 @@ export class LiveExecutor {
     this._leverageConfigured = new Set();
     this.instruments = new Map(); // symbol -> instrument rules
     this.dailyLossExceeded = false;
+    this.protectionManager = new ProtectionManager({
+      settings: engine?.state?.settings?.exec || DEFAULT_EXEC_SETTINGS,
+      logger: (level, msg) => engine?.log?.(level, msg),
+    });
+  }
+
+  /**
+   * Run preflight account verification (`FX-25`).
+   */
+  async runPreflight(opts = {}) {
+    if (!this.adapter) {
+      return { ok: false, stage: "adapter", reason: "no-adapter-connected" };
+    }
+    return runAccountPreflight({
+      adapter: this.adapter,
+      symbol: opts.symbol || "BTCUSDT",
+      includeTestOrder: Boolean(opts.includeTestOrder),
+      maxClockDriftMs: toNum(this.engine?.state?.settings?.exec?.clockDriftMaxMs, 2500),
+    });
   }
 
   setAdapter(adapter) {
@@ -367,9 +389,12 @@ export class LiveExecutor {
     let orphans = 0;
 
     // Check exchange positions against internal state
+    const exSymbols = new Set();
+    let closedExternally = 0;
     for (const exPos of exchangePositions) {
+      exSymbols.add(exPos.symbol.toUpperCase());
       const match = engine.state.positions.find(
-        (p) => p.mode === "live" && p.symbol.toUpperCase() === exPos.symbol.toUpperCase()
+        (p) => p.mode === "live" && (p.symbol.toUpperCase() === exPos.symbol.toUpperCase() || p.exchangeSymbol?.toUpperCase() === exPos.symbol.toUpperCase())
       );
 
       if (match) {
@@ -385,7 +410,17 @@ export class LiveExecutor {
       }
     }
 
-    return { reconciled, orphans };
+    // Detect positions closed externally on the exchange (`FX-24`, `EC-37`)
+    const livePositions = engine.state.positions.filter((p) => p.mode === "live" && p.status === "open");
+    for (const localPos of livePositions) {
+      const symKey = (localPos.exchangeSymbol || localPos.symbol || "").toUpperCase();
+      if (exchangePositions.length > 0 && !exSymbols.has(symKey) && !exSymbols.has(localPos.symbol.toUpperCase())) {
+        closedExternally++;
+        engine.log("warn", `RECONCILE CLOSED EXTERNALLY: ${localPos.symbol} no longer open on ${this.adapter.id}`);
+      }
+    }
+
+    return { reconciled, orphans, closedExternally };
   }
 
   /**

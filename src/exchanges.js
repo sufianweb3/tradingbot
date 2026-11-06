@@ -29,6 +29,27 @@ async function httpJson(url, { timeoutMs = 15000, retries = 1 } = {}) {
   throw lastError;
 }
 
+export function buildSyntheticBookFromQuote(price, volUsd = 50000000, levels = 25) {
+  const p = toNum(price, 0);
+  if (!(p > 0)) return { bids: [], asks: [], ts: now(), synthetic: true };
+  const spreadFrac = 0.0002; // 4 bps total spread
+  const bestBid = p * (1 - spreadFrac / 2);
+  const bestAsk = p * (1 + spreadFrac / 2);
+  const stepFrac = 0.00025; // 2.5 bps per level
+  const depthScaleUsd = Math.max(5000, Math.min(250000, toNum(volUsd, 50000000) / 2500));
+
+  const bids = [];
+  const asks = [];
+  for (let i = 0; i < levels; i++) {
+    const bp = bestBid * (1 - i * stepFrac);
+    const ap = bestAsk * (1 + i * stepFrac);
+    const levelUsd = depthScaleUsd * (1 + (i % 3) * 0.15);
+    bids.push([bp, levelUsd / bp]);
+    asks.push([ap, levelUsd / ap]);
+  }
+  return { bids, asks, ts: now(), synthetic: true };
+}
+
 export const VENUES = {
   mexc: {
     name: "MEXC",
@@ -49,6 +70,18 @@ export const VENUES = {
         { timeoutMs: 8000 }
       );
       return toNum(j?.data?.lastPrice);
+    },
+    async fetchBook(symbol, limit = 50) {
+      const j = await httpJson(
+        `https://contract.mexc.com/api/v1/contract/depth/${encodeURIComponent(symbol)}?limit=${limit}`,
+        { timeoutMs: 6000 }
+      );
+      const d = j?.data || {};
+      return {
+        bids: (d.bids || []).map((b) => [toNum(b[0], 0), toNum(b[1], 0)]),
+        asks: (d.asks || []).map((a) => [toNum(a[0], 0), toNum(a[1], 0)]),
+        ts: toNum(d.timestamp, now()),
+      };
     },
   },
 
@@ -71,6 +104,17 @@ export const VENUES = {
         { timeoutMs: 8000 }
       );
       return toNum(Array.isArray(j) ? j[0]?.last : null);
+    },
+    async fetchBook(symbol, limit = 50) {
+      const j = await httpJson(
+        `https://api.gateio.ws/api/v4/futures/usdt/order_book?contract=${encodeURIComponent(symbol)}&limit=${limit}`,
+        { timeoutMs: 6000 }
+      );
+      return {
+        bids: (j?.bids || []).map((b) => [toNum(b.p ?? b[0], 0), toNum(b.s ?? b[1], 0)]),
+        asks: (j?.asks || []).map((a) => [toNum(a.p ?? a[0], 0), toNum(a.s ?? a[1], 0)]),
+        ts: j?.current ? Math.round(Number(j.current) * 1000) : now(),
+      };
     },
   },
 
@@ -97,6 +141,18 @@ export const VENUES = {
         { timeoutMs: 8000 }
       );
       return toNum(j?.data?.price);
+    },
+    async fetchBook(symbol) {
+      const j = await httpJson(
+        `https://api-futures.kucoin.com/api/v1/level2/depth20?symbol=${encodeURIComponent(symbol)}`,
+        { timeoutMs: 6000 }
+      );
+      const d = j?.data || {};
+      return {
+        bids: (d.bids || []).map((b) => [toNum(b[0], 0), toNum(b[1], 0)]),
+        asks: (d.asks || []).map((a) => [toNum(a[0], 0), toNum(a[1], 0)]),
+        ts: toNum(d.ts ? Math.floor(Number(d.ts) / 1e6) : null, now()),
+      };
     },
   },
 
@@ -126,6 +182,17 @@ export const VENUES = {
       );
       return toNum(j?.price);
     },
+    async fetchBook(symbol, limit = 50) {
+      const j = await httpJson(
+        `https://fapi.binance.com/fapi/v1/depth?symbol=${encodeURIComponent(symbol)}&limit=${limit}`,
+        { timeoutMs: 6000 }
+      );
+      return {
+        bids: (j?.bids || []).map((b) => [toNum(b[0], 0), toNum(b[1], 0)]),
+        asks: (j?.asks || []).map((a) => [toNum(a[0], 0), toNum(a[1], 0)]),
+        ts: toNum(j?.T, now()),
+      };
+    },
   },
 
   bybit: {
@@ -147,6 +214,18 @@ export const VENUES = {
         { timeoutMs: 8000 }
       );
       return toNum(j?.result?.list?.[0]?.lastPrice);
+    },
+    async fetchBook(symbol, limit = 50) {
+      const j = await httpJson(
+        `https://api.bybit.com/v5/market/orderbook?category=linear&symbol=${encodeURIComponent(symbol)}&limit=${limit}`,
+        { timeoutMs: 6000 }
+      );
+      const d = j?.result || {};
+      return {
+        bids: (d.b || []).map((b) => [toNum(b[0], 0), toNum(b[1], 0)]),
+        asks: (d.a || []).map((a) => [toNum(a[0], 0), toNum(a[1], 0)]),
+        ts: toNum(d.ts, now()),
+      };
     },
   },
 
@@ -175,6 +254,20 @@ export const VENUES = {
       const row = Array.isArray(j?.data) ? j.data[0] : j?.data;
       return toNum(row?.lastPr);
     },
+    async fetchBook(symbol, limit = 50) {
+      const j = await httpJson(
+        `https://api.bitget.com/api/v2/mix/market/merge-depth?symbol=${encodeURIComponent(
+          symbol
+        )}&productType=USDT-FUTURES&limit=${limit}`,
+        { timeoutMs: 6000 }
+      );
+      const d = j?.data || {};
+      return {
+        bids: (d.bids || []).map((b) => [toNum(b[0], 0), toNum(b[1], 0)]),
+        asks: (d.asks || []).map((a) => [toNum(a[0], 0), toNum(a[1], 0)]),
+        ts: toNum(d.ts, now()),
+      };
+    },
   },
 
   okx: {
@@ -201,6 +294,18 @@ export const VENUES = {
         { timeoutMs: 8000 }
       );
       return toNum(j?.data?.[0]?.last);
+    },
+    async fetchBook(symbol, limit = 50) {
+      const j = await httpJson(
+        `https://www.okx.com/api/v5/market/books?instId=${encodeURIComponent(symbol)}&sz=${limit}`,
+        { timeoutMs: 6000 }
+      );
+      const d = j?.data?.[0] || {};
+      return {
+        bids: (d.bids || []).map((b) => [toNum(b[0], 0), toNum(b[1], 0)]),
+        asks: (d.asks || []).map((a) => [toNum(a[0], 0), toNum(a[1], 0)]),
+        ts: toNum(d.ts, now()),
+      };
     },
   },
 };
@@ -343,6 +448,82 @@ export class ExchangeHub {
   resolveExact(symbol) {
     const base = normalizeBase(symbol);
     return this.best.get(base) || null;
+  }
+
+  /**
+   * Resolve all discovered venue entries for a base coin, sorted by 24h volume descending.
+   */
+  resolveAll(symbol) {
+    const base = normalizeBase(symbol);
+    if (!base) return [];
+    const list = [];
+    for (const [, map] of this.maps.entries()) {
+      const entry =
+        map.get(base) ||
+        (base === "BTC" ? map.get("XBT") : null) ||
+        (base === "XBT" ? map.get("BTC") : null);
+      if (entry) list.push(entry);
+    }
+    list.sort((a, b) => (b.volUsd || 0) - (a.volUsd || 0));
+    return list;
+  }
+
+  /**
+   * Fetch L2 order book for a venue instrument (or synthesize from quote if offline/test).
+   */
+  async fetchBook(entry, { limit = 50, maxAgeMs = 1500, allowSynthetic = true } = {}) {
+    const venue = entry?.venue;
+    const symbol = entry?.venueSymbol || entry?.symbol;
+    if (!VENUES[venue] || !symbol) return null;
+    if (!this.books) this.books = new Map();
+    const cacheKey = `${venue}:${symbol}`;
+    const cached = this.books.get(cacheKey);
+    const t = now();
+    if (cached && t - cached.ts <= maxAgeMs) {
+      return cached;
+    }
+
+    if (typeof VENUES[venue].fetchBook === "function") {
+      try {
+        const b = await VENUES[venue].fetchBook(symbol, limit);
+        if (b && Array.isArray(b.bids) && b.bids.length > 0 && Array.isArray(b.asks) && b.asks.length > 0) {
+          const out = {
+            venue,
+            venueName: VENUES[venue].name,
+            venueSymbol: symbol,
+            bids: b.bids,
+            asks: b.asks,
+            ts: b.ts || now(),
+            synthetic: false,
+          };
+          this.books.set(cacheKey, out);
+          return out;
+        }
+      } catch {
+        /* fallback below if allowSynthetic */
+      }
+    }
+
+    if (allowSynthetic) {
+      const q = await this.quote(entry, { maxAgeMs }).catch(() => null);
+      const price = toNum(q?.price ?? entry?.price, 0);
+      if (price > 0) {
+        const syn = buildSyntheticBookFromQuote(price, entry.volUsd || 50000000);
+        const out = {
+          venue,
+          venueName: VENUES[venue].name,
+          venueSymbol: symbol,
+          bids: syn.bids,
+          asks: syn.asks,
+          ts: q?.ts || now(),
+          synthetic: true,
+        };
+        this.books.set(cacheKey, out);
+        return out;
+      }
+    }
+
+    return null;
   }
 
   /**

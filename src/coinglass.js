@@ -24,6 +24,9 @@ if (typeof process !== "undefined" && process?.versions?.node) {
 }
 import { OI_FIELD, VOL_FIELD } from "./trading.js";
 import { sleep, toNum } from "./util.js";
+import { CoinGlassKeyCache } from "./core/speed.js";
+
+export const cgKeyCache = new CoinGlassKeyCache(128);
 
 const CAP = "https://capi.coinglass.com";
 const PAGE_SIZE = 100;
@@ -34,6 +37,9 @@ const ASSET_TAG = "crypto";
 
 const marketUrl = (page) =>
   `${CAP}/api/home/v2/coinMarkets?sort=openInterest&order=desc&keyword=&pageNum=${page}&pageSize=${PAGE_SIZE}&ex=all&tags=${ASSET_TAG}`;
+
+const moversUrl = (sortField = "m5OiChangePercent", order = "desc", pageSize = 50) =>
+  `${CAP}/api/home/v2/coinMarkets?sort=${encodeURIComponent(sortField)}&order=${encodeURIComponent(order)}&keyword=&pageNum=1&pageSize=${pageSize}&ex=all&tags=${ASSET_TAG}`;
 
 const BASE_HEADERS = {
   "user-agent":
@@ -73,8 +79,14 @@ function key0For(v, pathname, cacheTs, timeHeader) {
 }
 
 function decryptBody(encryptedB64, userB64, v, ctx) {
-  const key0 = key0For(v, ctx.pathname, ctx.cacheTs, ctx.timeHeader);
-  const actualKey = zlib.gunzipSync(aesEcbDecrypt(Buffer.from(userB64, "base64"), key0)).toString("utf8");
+  let actualKey = cgKeyCache.get(v, userB64);
+  if (!actualKey) {
+    const key0 = key0For(v, ctx.pathname, ctx.cacheTs, ctx.timeHeader);
+    actualKey = zlib.gunzipSync(aesEcbDecrypt(Buffer.from(userB64, "base64"), key0)).toString("utf8");
+    if (v === "1" || LEGACY_KEYS[v]) {
+      cgKeyCache.set(v, userB64, actualKey);
+    }
+  }
   const inner = zlib.gunzipSync(
     aesEcbDecrypt(Buffer.from(encryptedB64, "base64"), Buffer.from(actualKey, "utf8"))
   );
@@ -234,7 +246,7 @@ async function apiFetch(apiKey, page, timeoutMs = 25000) {
  * Fast lane: fetch only page 1 (the top 100 coins by open interest).
  *
  * A single request is the smallest unit CoinGlass allows, so this is the
- * lowest-latency update available — used to keep the hottest rows fresh while
+ * lowest-latency update available - used to keep the hottest rows fresh while
  * the full 671-coin table refreshes on a slower cadence.
  */
 export async function fetchTopMarkets() {
@@ -257,6 +269,46 @@ export async function fetchTopMarkets() {
     total,
     pages: 1,
     source: "scrape",
+    fetchedAt: Date.now(),
+    fetchedInMs: Date.now() - started,
+  };
+}
+
+/**
+ * Movers lane (FX-40): fetch top 50 rows sorted by 5m OI change + top 50 by OI.
+ * Captures sudden OI spikes outside top-100 without scraping all 28+ pages.
+ */
+export async function fetchMoversMarkets() {
+  const started = Date.now();
+  const [moversUp, moversDown, topOi] = await Promise.allSettled([
+    cgFetch(moversUrl("m5OiChangePercent", "desc", 50)),
+    cgFetch(moversUrl("m5OiChangePercent", "asc", 50)),
+    cgFetch(moversUrl("openInterest", "desc", 50)),
+  ]);
+
+  const coins = [];
+  const seen = new Set();
+  let total = 0;
+
+  for (const res of [moversUp, moversDown, topOi]) {
+    if (res.status !== "fulfilled" || !res.value) continue;
+    total = Math.max(total, toNum(res.value?.total, 0) ?? 0);
+    for (const raw of Array.isArray(res.value?.list) ? res.value.list : []) {
+      if (raw?.stockSymbol) continue;
+      if (/tokeni[sz]ed stock/i.test(String(raw?.name || ""))) continue;
+      const coin = normaliseCoin(raw);
+      if (!coin.symbol || !/^[A-Z0-9]{1,24}$/.test(coin.symbol)) continue;
+      if (seen.has(coin.symbol)) continue;
+      seen.add(coin.symbol);
+      coins.push(coin);
+    }
+  }
+
+  return {
+    coins,
+    total: Math.max(total, coins.length),
+    pages: 1,
+    source: "scrape-movers",
     fetchedAt: Date.now(),
     fetchedInMs: Date.now() - started,
   };

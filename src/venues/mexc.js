@@ -152,6 +152,14 @@ export class MexcAdapter extends ExchangeAdapter {
   capabilities() {
     return {
       trading: this._tradingCapable,
+      ioc: this._tradingCapable,
+      attachedSlTp: false,
+      conditionalEndpoint: this._tradingCapable,
+      nativeTrail: false,
+      atomicAmend: false,
+      privateWs: false,
+      closePositionStop: true,
+      testnet: false,
       ...(this._probeReason ? { reason: this._probeReason } : {}),
     };
   }

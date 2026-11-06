@@ -20,7 +20,17 @@ export class BybitAdapter extends ExchangeAdapter {
   }
 
   capabilities() {
-    return { trading: true };
+    return {
+      trading: true,
+      ioc: true,
+      attachedSlTp: true,
+      conditionalEndpoint: true,
+      nativeTrail: true,
+      atomicAmend: true,
+      privateWs: true,
+      closePositionStop: true,
+      testnet: true,
+    };
   }
 
   /**

@@ -53,6 +53,6 @@ Initial public release.
 
 ### Notes
 
-- Paper trading only — no orders are ever sent to an exchange.
+- Paper trading only - no orders are ever sent to an exchange.
 - Runtime state (`data/`), secrets, and the local CoinGlass reference bundle
   (`js/`, `home.html`) are not tracked.

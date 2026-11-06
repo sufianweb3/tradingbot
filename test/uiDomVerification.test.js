@@ -236,3 +236,54 @@ test("Route Verification: POST /api/exchange/select updates settings.live.exchan
   assert.equal(resBad.status, 400);
   assert.equal(resBad.data.ok, false);
 });
+
+test("DOM Verification: Professional workstation FX-80..FX-90 components and DESIGN.md specification", () => {
+  const html = fs.readFileSync(htmlPath, "utf8");
+  const css = fs.readFileSync(cssPath, "utf8");
+  const app = fs.readFileSync(appPath, "utf8");
+  const designPath = path.join(ROOT, "DESIGN.md");
+  assert.ok(fs.existsSync(designPath), "DESIGN.md must exist");
+  const design = fs.readFileSync(designPath, "utf8");
+  assert.doesNotMatch(design, /[\u2013\u2014]/, "DESIGN.md must not contain em or en dashes");
+
+  // FX-80, FX-81, FX-82: Inspector modal, depth SVG, route table
+  assert.match(html, /id="inspectorModal"/, "index.html must include #inspectorModal");
+  assert.match(html, /id="inspectorDepthSvgWrap"/, "index.html must include #inspectorDepthSvgWrap (FX-81)");
+  assert.match(html, /id="inspectorRouteBody"/, "index.html must include #inspectorRouteBody (FX-82)");
+  assert.match(app, /function openInspectorModal/, "app.js must define openInspectorModal");
+  assert.match(app, /function renderDepthChartSvg/, "app.js must define renderDepthChartSvg");
+
+  // FX-83, FX-86: Position Exit Liquidity Badge & Lifecycle Timeline
+  assert.match(app, /liq-badge/, "app.js must render .liq-badge on open positions (FX-83)");
+  assert.match(app, /pc-lifecycle/, "app.js must render .pc-lifecycle timeline on open positions (FX-86)");
+
+  // FX-84, FX-85: Telemetry Strip & Venue Health Bar
+  assert.match(html, /id="telemetryStrip"/, "index.html must include #telemetryStrip");
+  assert.match(html, /id="venueHealthPills"/, "index.html must include #venueHealthPills (FX-84)");
+  assert.match(html, /id="speedTelemetryBar"/, "index.html must include #speedTelemetryBar (FX-85)");
+
+  // FX-87, FX-88, FX-89, FX-90: Quality strip, Blocked Signals Bar, Live-Critical Banners, Cost Preview
+  assert.match(html, /id="tradeExecQualityStrip"/, "index.html must include #tradeExecQualityStrip (FX-87)");
+  assert.match(html, /id="blockedSignalsBar"/, "index.html must include #blockedSignalsBar (FX-88)");
+  assert.match(app, /"protection-failed":\s*\{\s*priority:\s*99/, "BANNER_CONFIG must include protection-failed (FX-89)");
+  assert.match(html, /id="execCostPreview"/, "index.html must include #execCostPreview (FX-90)");
+  assert.match(css, /font-variant-numeric:\s*tabular-nums/, "styles.css must enforce tabular-nums");
+});
+
+test("DOM Verification: Pre-load state clearing, loading states, and skeleton shimmer animations", () => {
+  const html = fs.readFileSync(htmlPath, "utf8");
+  const css = fs.readFileSync(cssPath, "utf8");
+  const app = fs.readFileSync(appPath, "utf8");
+
+  assert.match(html, /class="app is-loading"/, "index.html root .app must start with is-loading class");
+  assert.match(html, /skeleton-card/, "index.html must render initial skeleton cards before bootstrap");
+  assert.match(css, /@keyframes\s+skeletonShimmer/, "styles.css must define @keyframes skeletonShimmer");
+  assert.match(css, /\.skeleton-table-row/, "styles.css must define .skeleton-table-row");
+  assert.match(css, /\.btn\.is-loading/, "styles.css must define .btn.is-loading spinner");
+  assert.match(app, /function\s+clearBeforeLoading/, "app.js must define clearBeforeLoading");
+  assert.match(app, /function\s+finishLoadingState/, "app.js must define finishLoadingState");
+  assert.match(app, /function\s+buildSkeletonTableRows/, "app.js must define buildSkeletonTableRows");
+  assert.match(app, /function\s+buildSkeletonPositionCards/, "app.js must define buildSkeletonPositionCards");
+  assert.doesNotMatch(html, /id="inputLiveConfirm"/, "Live confirmation modal must be a simple one-click confirmation without text typing input");
+  assert.match(html, /id="btnActivateLive"[^>]*>Switch to LIVE<\/button>/, "Live confirmation modal must have an enabled Switch to LIVE button");
+});

@@ -20,7 +20,17 @@ export class BinanceAdapter extends ExchangeAdapter {
   }
 
   capabilities() {
-    return { trading: true };
+    return {
+      trading: true,
+      ioc: true,
+      attachedSlTp: false,
+      conditionalEndpoint: true,
+      nativeTrail: true,
+      atomicAmend: false,
+      privateWs: true,
+      closePositionStop: true,
+      testnet: true,
+    };
   }
 
   /**

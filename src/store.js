@@ -18,6 +18,12 @@ if (typeof process !== "undefined" && process?.versions?.node) {
 import { DEFAULT_VENUES } from "./exchanges.js";
 import { OI_TIMEFRAMES, VOL_TIMEFRAMES, PRICE_TIMEFRAMES } from "./trading.js";
 import { clamp, deepMerge, now, toNum } from "./util.js";
+import { DEFAULT_EQE_SETTINGS } from "./core/eqe/index.js";
+import { DEFAULT_SIM_SETTINGS } from "./executor/paper.js";
+import { DEFAULT_EXEC_SETTINGS } from "./core/protectionManager.js";
+import { DEFAULT_ROUTE_SETTINGS } from "./core/router/index.js";
+import { DEFAULT_SPEED_SETTINGS } from "./core/speed.js";
+import { DEFAULT_RISK_SETTINGS } from "./core/riskGuards.js";
 
 function filterDefaults(timeframes, group, defaultOp = ">=") {
   return timeframes.map((key) => ({
@@ -121,6 +127,14 @@ export const DEFAULT_SETTINGS = {
     long: defaultProfile("long"),
     short: defaultProfile("short"),
   },
+
+  // Additions Specification (Section 10)
+  eqe: { ...DEFAULT_EQE_SETTINGS },
+  sim: { ...DEFAULT_SIM_SETTINGS },
+  exec: { ...DEFAULT_EXEC_SETTINGS },
+  route: { ...DEFAULT_ROUTE_SETTINGS },
+  speed: { ...DEFAULT_SPEED_SETTINGS },
+  risk: { ...DEFAULT_RISK_SETTINGS },
 };
 
 const RANGES = {
@@ -406,6 +420,25 @@ export function normalizeSettings(input = {}) {
     dailyLossCap: Math.max(0, toNum(rawLive.dailyLossCap, 0)),
     clampLeverage: rawLive.clampLeverage !== false,
   };
+
+  // Normalize Section 10 blocks (`eqe`, `sim`, `exec`, `route`, `speed`, `risk`)
+  s.eqe = deepMerge(DEFAULT_EQE_SETTINGS, s.eqe && typeof s.eqe === "object" ? s.eqe : {});
+  s.eqe.enabled = Boolean(s.eqe.enabled);
+  s.eqe.autoSizeToLiquidity = Boolean(s.eqe.autoSizeToLiquidity);
+  s.eqe.blockThinExit = Boolean(s.eqe.blockThinExit);
+  s.eqe.antiSpoofEnabled = Boolean(s.eqe.antiSpoofEnabled);
+
+  s.sim = deepMerge(DEFAULT_SIM_SETTINGS, s.sim && typeof s.sim === "object" ? s.sim : {});
+  s.sim.useOrderBook = Boolean(s.sim.useOrderBook);
+  s.sim.includeFunding = Boolean(s.sim.includeFunding);
+  s.sim.mode = ["optimistic", "realistic", "harsh"].includes(s.sim.mode) ? s.sim.mode : "realistic";
+
+  s.exec = deepMerge(DEFAULT_EXEC_SETTINGS, s.exec && typeof s.exec === "object" ? s.exec : {});
+  s.route = deepMerge(DEFAULT_ROUTE_SETTINGS, s.route && typeof s.route === "object" ? s.route : {});
+  s.route.mode = ["auto", "pinned", "priority"].includes(s.route.mode) ? s.route.mode : "auto";
+
+  s.speed = deepMerge(DEFAULT_SPEED_SETTINGS, s.speed && typeof s.speed === "object" ? s.speed : {});
+  s.risk = deepMerge(DEFAULT_RISK_SETTINGS, s.risk && typeof s.risk === "object" ? s.risk : {});
 
   return s;
 }

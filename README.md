@@ -1,4 +1,4 @@
-# OI Sniper — CoinGlass screener + paper-trading bot
+# OI Sniper - CoinGlass screener + paper-trading bot
 
 A local, browser-based **paper-trading** bot. It screens the full CoinGlass market
 table for open-interest and volume percentage moves, prices every coin from public
@@ -52,29 +52,29 @@ by default. Configure at least one OI/Volume row in the dashboard, press
 
 ## Dashboard
 
-- **Strategy settings** (left panel) — capital, leverage, sizing, SL/TP, trailing,
+- **Strategy settings** (left panel) - capital, leverage, sizing, SL/TP, trailing,
   OI/volume filters with per-row on/off toggles, direction, universe limits, max
   trades, scan/refresh timing, fees, venues.
-- **KPI strip** — equity, total P/L, open P/L, win rate, profit factor, max
+- **KPI strip** - equity, total P/L, open P/L, win rate, profit factor, max
   drawdown, trade count, fees.
-- **CoinGlass connection** — a green **Connected** / red **Disconnected** pill in
+- **CoinGlass connection** - a green **Connected** / red **Disconnected** pill in
   the top bar. It reflects the last scrape attempt against `capi.coinglass.com`;
   hover it for the last success time, data age, latency, coin count and last
   error.
-- **CoinGlass live data** — a dedicated real-time feed of everything the bot
+- **CoinGlass live data** - a dedicated real-time feed of everything the bot
   scraped, crypto only, in the format **coin name · OI 5m % · Volume 1h %**. Sort
   by biggest move, OI high/low, or volume high/low; search by coin; the footer
   shows how many rows are displayed and when the data was last refreshed.
-- **Open positions** — live ROE, progress bar, current stop, TP levels, distance
+- **Open positions** - live ROE, progress bar, current stop, TP levels, distance
   to TP1/stop, manual close.
-- **Live scanner** — *Qualified* / *Near miss* / *All* tabs, search, per-row
+- **Live scanner** - *Qualified* / *Near miss* / *All* tabs, search, per-row
   pass/fail colouring and one-click manual trade.
-- **Fund PnL** — equity curve with hover tooltip and initial-fund baseline.
-- **Trade history** — filterable, paginated, CSV export.
-- **Activity log** — newest-first engine events.
-- **Report** — downloads a self-contained HTML report (equity SVG + full trade
+- **Fund PnL** - equity curve with hover tooltip and initial-fund baseline.
+- **Trade history** - filterable, paginated, CSV export.
+- **Activity log** - newest-first engine events.
+- **Report** - downloads a self-contained HTML report (equity SVG + full trade
   history). `CSV` and `JSON` exports are also available from the API.
-- **Reset** — clears trades, PnL, equity curve and history; keeps settings.
+- **Reset** - clears trades, PnL, equity curve and history; keeps settings.
 
 Settings are only applied when you press **Save & apply**. Unsaved changes show an
 `unsaved` badge. Changing **Total fund** mid-run resets the paper account (the fund
@@ -94,7 +94,7 @@ Percent changes are taken from the CoinGlass market table:
 | Volume        | 1h, 4h                  | `h1VolChangePercent`, `h4VolChangePercent` |
 
 Every **enabled** row with a numeric threshold must pass (`≥` or `≤`). Rows are
-**off and blank by default** — a blank/disabled row is ignored entirely. If no row
+**off and blank by default** - a blank/disabled row is ignored entirely. If no row
 is configured, scans report `no-filters` and no trades open.
 
 **Direction** is `auto` by default:
@@ -118,7 +118,7 @@ You can force `long` or `short` in the settings.
 
 ### 3. Entry and sizing
 
-Each qualifying coin is evaluated and opened independently within a scan — the bot
+Each qualifying coin is evaluated and opened independently within a scan - the bot
 does **not** wait for every coin before acting. Default sizing:
 
 - Total fund **$500**
@@ -178,7 +178,7 @@ Defaults:
 | TP1 close           | 50%     | Portion closed at TP1 |
 | Trailing stop       | on      | Starts after TP1; 20% ROE trail from the peak |
 | Max TP              | 1000% ROE | Closes the runner |
-| Liquidation guard   | —       | Approximate 1/leverage − 0.5% maintenance |
+| Liquidation guard   | -       | Approximate 1/leverage − 0.5% maintenance |
 
 After TP1 the remainder trails from the highest (long) / lowest (short) price seen.
 The trail is armed in the same tick as the TP1 partial exit. Realised TP1 cash is
@@ -304,9 +304,9 @@ When no API key is stored, the dashboard tab itself scrapes CoinGlass with the
 same encrypted endpoint and pushes the rows to the engine. Nothing to enable:
 press **Start** (or just open the dashboard) and the feed begins.
 
-- **Fast lane** — one request for page 1 (top 100 by OI) every ~0.7 s, then a
+- **Fast lane** - one request for page 1 (top 100 by OI) every ~0.7 s, then a
   small merge push to the engine every 5 s.
-- **Full lane** — all 7 pages every 30 s, replacing the table so every coin is
+- **Full lane** - all 7 pages every 30 s, replacing the table so every coin is
   current.
 - The engine prefers a feed younger than **90 s** over any server-side scrape, so
   the Cloudflare deployment produces signals without an API key. The window is
@@ -320,8 +320,8 @@ press **Start** (or just open the dashboard) and the feed begins.
 
 Workers Free allows **100,000 Durable Object requests per day**, and every HTTP
 request, alarm and WebSocket message counts. The first version polled
-`/api/live` + `/api/markets` every 1–1.5 s and pushed the device feed every 2 s,
-which is about **219k/day** — the live bot was therefore killed by the quota
+`/api/live` + `/api/markets` every 1-1.5 s and pushed the device feed every 2 s,
+which is about **219k/day** - the live bot was therefore killed by the quota
 after roughly 11 hours.
 
 The current design budgets about **47k/day idle / 76k/day with an open position**:
@@ -356,9 +356,9 @@ Measured from this network against the live endpoint:
 | `/api/markets` refresh gate | 60 s | 0.9 s, served from cache (no blocking) |
 | Dashboard row poll | 7 s | 4 s for server flags; local device rows ~0.7 s |
 | Full 671-coin scrape | ~1.3 s (4 at a time) | ~1.0 s (all pages parallel) |
-| Top-100 refresh | — | ~0.48 s (one request) |
-| Browser → cloud push (100 rows, 35 KB) | — | ~0.2 s |
-| `/api/dashboard` response | 1.2–2.5 s (blocking) | ~0.25 s |
+| Top-100 refresh | - | ~0.48 s (one request) |
+| Browser → cloud push (100 rows, 35 KB) | - | ~0.2 s |
+| `/api/dashboard` response | 1.2-2.5 s (blocking) | ~0.25 s |
 
 Final measured loop against the live worker: scrape **480 ms** → push **204 ms** →
 engine reports data age **~190 ms**. The rows the engine trades on are therefore
@@ -366,10 +366,10 @@ well under a second old, refreshed continuously, instead of up to a minute.
 
 Two hard limits remain:
 
-1. A single CoinGlass request is ~350–700 ms from a home connection, so a
+1. A single CoinGlass request is ~350-700 ms from a home connection, so a
    guaranteed sub-500 ms round trip is not physically possible. Continuous
    refresh keeps it at one request of lag.
-2. CoinGlass only republishes OI/volume percentages every ~1–2 s (measured:
+2. CoinGlass only republishes OI/volume percentages every ~1-2 s (measured:
    15 polls in 8.7 s, 4 value changes), so polling faster than that returns
    identical numbers.
 
@@ -516,13 +516,13 @@ Browser ──► Worker (cf/index.js)
               └── everything else ──► env.ASSETS (public/)
 ```
 
-- `cf/do.js` — Durable Object router, mirrors the local JSON API and resumes a
+- `cf/do.js` - Durable Object router, mirrors the local JSON API and resumes a
   running bot after eviction.
-- `cf/store.js` — storage adapter so the engine persists to DO storage instead
+- `cf/store.js` - storage adapter so the engine persists to DO storage instead
   of `data/state.json`.
-- `cf/timers.js` — maps the engine's `setTimeout`/`clearTimeout` onto the single
+- `cf/timers.js` - maps the engine's `setTimeout`/`clearTimeout` onto the single
   Durable Object alarm.
-- `wrangler.jsonc` — Worker, assets binding, DO binding and SQLite migration.
+- `wrangler.jsonc` - Worker, assets binding, DO binding and SQLite migration.
 
 Commands:
 

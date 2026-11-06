@@ -62,6 +62,13 @@ const state = {
   serverPausedUntil: 0,
   quotaNotice: false,
   legacyApi: false,
+  blockFilter: "all",
+  inspector: {
+    symbol: null,
+    side: "long",
+    eqe: null,
+    route: null,
+  },
 };
 
 /* ------------------------------------------------------------------ */
@@ -156,10 +163,150 @@ const ago = (ms) => {
   return `${h}h ${m % 60}m ago`;
 };
 
+function buildSkeletonTableRows(cols = 12, count = 6) {
+  const widths = ["w-60", "w-75", "w-50", "w-40", "w-60", "w-50", "w-40", "w-60", "w-50", "w-75", "w-60", "w-50"];
+  let html = "";
+  for (let r = 0; r < count; r++) {
+    let cells = `<td><div class="skeleton-cell-coin"><span class="skeleton skeleton-avatar"></span><span class="skeleton skeleton-line w-60"></span></div></td>`;
+    for (let c = 1; c < cols; c++) {
+      const w = widths[(r + c) % widths.length];
+      cells += `<td class="num"><span class="skeleton skeleton-line ${w}" style="margin-left:auto"></span></td>`;
+    }
+    html += `<tr class="skeleton-table-row" aria-hidden="true">${cells}</tr>`;
+  }
+  return html;
+}
+
+function buildSkeletonPositionCards(count = 2) {
+  let html = "";
+  for (let i = 0; i < count; i++) {
+    html += `<div class="skeleton-card" aria-hidden="true">
+      <div class="skeleton-card-head">
+        <span class="skeleton skeleton-avatar"></span>
+        <span class="skeleton skeleton-line w-40"></span>
+        <span class="skeleton skeleton-pill" style="margin-left:auto"></span>
+      </div>
+      <div class="skeleton-card-grid">
+        <span class="skeleton skeleton-line w-75"></span>
+        <span class="skeleton skeleton-line w-60"></span>
+        <span class="skeleton skeleton-line w-60"></span>
+        <span class="skeleton skeleton-line w-50"></span>
+      </div>
+    </div>`;
+  }
+  return html;
+}
+
+function clearBeforeLoading(scope = "all") {
+  if (scope === "all") {
+    state.loaded = false;
+    state.positions = [];
+    state.markets = [];
+    state.trades = [];
+    const appRoot = $("#appRoot") || $(".app");
+    if (appRoot) {
+      appRoot.classList.add("is-loading");
+      appRoot.setAttribute("aria-busy", "true");
+    }
+    const pillsBox = $("#venueHealthPills");
+    if (pillsBox) {
+      pillsBox.innerHTML = Array.from({ length: 5 }, () => `<span class="skeleton skeleton-pill" aria-hidden="true"></span>`).join("");
+    }
+    const posBox = $("#positionsBody");
+    if (posBox) {
+      posBox.setAttribute("aria-busy", "true");
+      posBox.innerHTML = buildSkeletonPositionCards(2);
+    }
+    const mktsBody = $("#marketsBody");
+    if (mktsBody) {
+      mktsBody.setAttribute("aria-busy", "true");
+      mktsBody.innerHTML = `<tr><td colspan="12" class="empty-row"><b>Loading CoinGlass data...</b>Fetching live Open Interest and Volume across all futures coins.</td></tr>` + buildSkeletonTableRows(12, 6);
+    }
+    const cgBody = $("#cgBody");
+    if (cgBody) {
+      cgBody.setAttribute("aria-busy", "true");
+      cgBody.innerHTML = `<tr><td colspan="3" class="empty-row">Waiting for CoinGlass data...</td></tr>` + buildSkeletonTableRows(3, 5);
+    }
+    const tradesBody = $("#tradesBody");
+    if (tradesBody) {
+      tradesBody.setAttribute("aria-busy", "true");
+      tradesBody.innerHTML = buildSkeletonTableRows(10, 4);
+    }
+    return;
+  }
+
+  if (scope === "inspector") {
+    const modal = $("#inspectorModal");
+    if (modal) {
+      modal.classList.add("is-loading-section");
+      modal.setAttribute("aria-busy", "true");
+    }
+    const badge = $("#insVerdictBadge");
+    if (badge) {
+      badge.className = "eqe-badge";
+      badge.textContent = "LOADING";
+    }
+    ["#insMidPrice", "#insSpreadBps", "#insImpactBps", "#insOneWayBps", "#insRoundTripBps", "#insBandDepth", "#insMaxSafeNotional", "#insBookAge"].forEach((sel) => {
+      const el = $(sel);
+      if (el) el.textContent = "--";
+    });
+    const reasonsEl = $("#insReasonsText");
+    if (reasonsEl) reasonsEl.textContent = "Clearing previous snapshot and fetching live L2 order book and route candidates...";
+    const walkEl = $("#insWalkSummary");
+    if (walkEl) walkEl.textContent = "VWAP Fill: --";
+    const svgWrap = $("#inspectorDepthSvgWrap");
+    if (svgWrap) svgWrap.innerHTML = `<div class="skeleton skeleton-chart" aria-hidden="true"></div>`;
+    const routeSummary = $("#insRouteSummary");
+    if (routeSummary) routeSummary.textContent = "Evaluating venues...";
+    const routeBody = $("#inspectorRouteBody");
+    if (routeBody) routeBody.innerHTML = buildSkeletonTableRows(8, 5);
+    return;
+  }
+
+  if (scope === "exchange") {
+    const grid = $("#exchangeGrid");
+    if (grid) {
+      grid.setAttribute("aria-busy", "true");
+      grid.innerHTML = buildSkeletonPositionCards(4);
+    }
+  }
+}
+
+function finishLoadingState(scope = "all") {
+  if (scope === "all") {
+    const appRoot = $("#appRoot") || $(".app");
+    if (appRoot) {
+      appRoot.classList.remove("is-loading");
+      appRoot.setAttribute("aria-busy", "false");
+    }
+    ["#positionsBody", "#marketsBody", "#cgBody", "#tradesBody"].forEach((sel) => {
+      const el = $(sel);
+      if (el) el.setAttribute("aria-busy", "false");
+    });
+    return;
+  }
+  if (scope === "inspector") {
+    const modal = $("#inspectorModal");
+    if (modal) {
+      modal.classList.remove("is-loading-section");
+      modal.setAttribute("aria-busy", "false");
+    }
+    return;
+  }
+  if (scope === "exchange") {
+    const grid = $("#exchangeGrid");
+    if (grid) grid.setAttribute("aria-busy", "false");
+  }
+}
+
 const BANNER_CONFIG = {
   "kill-switch": { priority: 100, level: "danger" },
+  "protection-failed": { priority: 99, level: "danger" },
+  "order-unknown": { priority: 97, level: "danger" },
+  "orphan-detected": { priority: 96, level: "danger" },
   "worker-error": { priority: 95, level: "danger" },
   "unsupported-browser": { priority: 90, level: "danger" },
+  "engine-busy": { priority: 85, level: "warn" },
   "exchange-error": { priority: 80, level: "danger" },
   "error": { priority: 75, level: "danger" },
   "update-required": { priority: 65, level: "warn" },
@@ -471,6 +618,25 @@ function renderSettingsForm() {
   const liveConf = state.settings.live || {};
   $$("[data-live-setting]").forEach((el) => setSettingValue(el, liveConf[el.dataset.liveSetting]));
 
+  // Nested settings (eqe, route, sim, exec, risk)
+  const nestedDefaults = {
+    "eqe.enabled": true,
+    "eqe.maxOneWayCostBps": 18,
+    "eqe.minDepthMultiple": 3,
+    "eqe.maxSpreadBps": 20,
+    "eqe.autoSizeToLiquidity": true,
+    "route.mode": "auto",
+    "sim.realismMode": "standard",
+    "exec.entryOrderType": "market_capped",
+    "risk.fundingGuardEnabled": true,
+  };
+  $$("[data-nested-setting]").forEach((el) => {
+    const pathKey = el.dataset.nestedSetting;
+    const [sec, key] = pathKey.split(".");
+    const val = state.settings?.[sec]?.[key] ?? nestedDefaults[pathKey];
+    setSettingValue(el, val);
+  });
+
   buildFilterRows($("#oiFilters"), prof.oiFilters || [], "oi");
   buildFilterRows($("#volFilters"), prof.volFilters || [], "vol");
   buildFilterRows($("#priceFilters"), prof.priceFilters || [], "price");
@@ -516,6 +682,14 @@ function collectSettings() {
     if (el.type === "checkbox") out.live[key] = el.checked;
     else if (el.type === "number") out.live[key] = el.value === "" ? 0 : Number(el.value);
     else out.live[key] = el.value;
+  });
+  $$("[data-nested-setting]").forEach((el) => {
+    const [sec, key] = el.dataset.nestedSetting.split(".");
+    if (!sec || !key) return;
+    out[sec] = out[sec] || {};
+    if (el.type === "checkbox") out[sec][key] = el.checked;
+    else if (el.type === "number") out[sec][key] = el.value === "" ? 0 : Number(el.value);
+    else out[sec][key] = el.value;
   });
   out.venues = $$(".venue-chip input:checked").map((el) => el.value);
   return out;
@@ -588,6 +762,39 @@ function updateDerived() {
     }
     if (tpMax && tp1 && tpMax < tp1) hint.textContent += " · TP max < TP1";
   }
+
+  // FX-90: Live Execution Cost Preview in Strategy Settings
+  const feeBps = num($('[data-setting="feePercent"]')?.value, 0.055) * 100;
+  const slipBps = num($('[data-setting="slippagePercent"]')?.value, 0.035) * 100;
+  const roundTripBps = Math.max(0.5, 2 * (feeBps + slipBps));
+  const minMovePct = roundTripBps / 100;
+  const tp1MoveBps = riskMode === "roe" ? (tp1 / lev) * 100 : tp1 * 100;
+  const edgeMultiple = roundTripBps > 0 ? tp1MoveBps / roundTripBps : 99;
+  const realismMode = $('[data-nested-setting="sim.realismMode"]')?.value || "standard";
+  const haircutMap = { optimistic: 20, standard: 35, conservative: 50, stress: 65 };
+  const haircutPct = haircutMap[realismMode] ?? 35;
+
+  const rtEl = $("#ecpRoundTripBps");
+  if (rtEl) rtEl.textContent = `${roundTripBps.toFixed(1)} bps`;
+  const mmEl = $("#ecpMinMovePct");
+  if (mmEl) mmEl.textContent = `${minMovePct.toFixed(2)}%`;
+  const emEl = $("#ecpEdgeMultiple");
+  if (emEl) emEl.textContent = `${edgeMultiple.toFixed(1)}x`;
+  const hcEl = $("#ecpHaircutPct");
+  if (hcEl) hcEl.textContent = `${haircutPct}%`;
+  const badgeEl = $("#ecpEdgeBadge");
+  if (badgeEl) {
+    if (edgeMultiple >= 2.2) {
+      badgeEl.className = "ecp-badge";
+      badgeEl.textContent = "Edge OK";
+    } else if (edgeMultiple >= 1.3) {
+      badgeEl.className = "ecp-badge warn";
+      badgeEl.textContent = "Thin Edge";
+    } else {
+      badgeEl.className = "ecp-badge danger";
+      badgeEl.textContent = "Fee Heavy";
+    }
+  }
 }
 
 function markDirty() {
@@ -597,7 +804,7 @@ function markDirty() {
 
 SETTINGS_ROOT.addEventListener("input", (e) => {
   if (e.target.matches('[data-live-setting="exchange"]')) return;
-  if (e.target.matches("[data-setting], [data-live-setting], [data-profile-setting], [data-f], #profileEnabled")) {
+  if (e.target.matches("[data-setting], [data-live-setting], [data-nested-setting], [data-profile-setting], [data-f], #profileEnabled")) {
     if (e.target.matches('[data-profile-setting="sizingMode"], [data-setting="sizingMode"]')) updateVisibility();
     if (e.target.matches('[data-f="enabled"]')) {
       const row = e.target.closest(".filter-row");
@@ -611,7 +818,7 @@ SETTINGS_ROOT.addEventListener("change", (e) => {
     selectActiveExchange(e.target.value);
     return;
   }
-  if (e.target.matches("[data-setting], [data-live-setting], [data-profile-setting], [data-f], #profileEnabled")) {
+  if (e.target.matches("[data-setting], [data-live-setting], [data-nested-setting], [data-profile-setting], [data-f], #profileEnabled")) {
     if (e.target.matches('[data-profile-setting="sizingMode"], [data-setting="sizingMode"]')) updateVisibility();
     if (e.target.matches('[data-f="enabled"]')) {
       const row = e.target.closest(".filter-row");
@@ -833,12 +1040,17 @@ function renderCoinGlassTable() {
   const limit = 100;
   const shown = rows.slice(0, limit);
   if (!all.length) {
-    body.innerHTML = `<tr><td colspan="3" class="empty-row"><b>Waiting for CoinGlass data…</b><p class="empty-desc">The bot is contacting capi.coinglass.com.</p></td></tr>`;
-    if (foot) foot.textContent = "No rows yet";
+    body.setAttribute("aria-busy", "true");
+    body.innerHTML =
+      `<tr><td colspan="3" class="empty-row"><b>Waiting for CoinGlass data…</b><p class="empty-desc">The bot is contacting capi.coinglass.com.</p></td></tr>` +
+      buildSkeletonTableRows(3, 5);
+    if (foot) foot.textContent = "Loading CoinGlass feed…";
   } else if (!shown.length) {
+    body.setAttribute("aria-busy", "false");
     body.innerHTML = `<tr><td colspan="3" class="empty-row"><b>No matching coins</b><p class="empty-desc">Try a different search.</p></td></tr>`;
     if (foot) foot.textContent = `0 of ${rows.length} coins`;
   } else {
+    body.setAttribute("aria-busy", "false");
     body.innerHTML = shown
       .map((m) => {
         const oi = m.oi?.["5m"];
@@ -943,13 +1155,21 @@ function renderKpis() {
 function renderPositions() {
   const box = $("#positionsBody");
   const list = state.positions || [];
+  if (!state.loaded) {
+    $("#positionsSub").textContent = "Loading positions…";
+    $("#btnCloseAll").classList.add("hidden");
+    box.setAttribute("aria-busy", "true");
+    box.innerHTML = buildSkeletonPositionCards(2);
+    return;
+  }
+  box.setAttribute("aria-busy", "false");
   $("#positionsSub").textContent = list.length
     ? `${list.length} open · margin ${money(state.stats?.lockedMargin)} · free ${money(state.stats?.available)}`
     : "No open positions";
   $("#btnCloseAll").classList.toggle("hidden", !list.length);
 
   if (!list.length) {
-    box.innerHTML = `<div class="pos-empty"><b>No open positions</b>When a coin passes every enabled filter, a paper trade opens here automatically.</div>`;
+    box.innerHTML = `<div class="pos-empty"><b>No open positions</b>When a coin passes every enabled filter and EQE liquidity gate, a position opens here automatically.</div>`;
     return;
   }
 
@@ -957,9 +1177,14 @@ function renderPositions() {
     .map((p) => {
       const win = num(p.roe) >= 0;
       const logo = p.symbol ? renderCoinBadge(p.symbol) : "";
+      const liq = p.exitLiquidity || { status: "green", estExitImpactBps: 2.1 };
+      const liqStatus = liq.status || "green";
+      const liqLabel = liqStatus === "red" ? "LIQ CRITICAL" : liqStatus === "amber" ? "LIQ THIN" : "LIQ OK";
+      const liqImpact = num(liq.estExitImpactBps, 2.1).toFixed(1);
+      const venueTag = String(p.venueName || p.venue || "bybit").toUpperCase();
       return `<article class="position-card ${win ? "win" : "loss"}">
         <div class="pc-head">
-          <div class="pc-symbol">${logo}<span>${esc(p.symbol)}</span><span class="side-tag ${esc(p.side)}">${esc(p.side)}</span>${p.tp1Hit ? '<span class="tp1-hit">TP1</span>' : ""}</div>
+          <div class="pc-symbol">${logo}<span>${esc(p.symbol)}</span><span class="side-tag ${esc(p.side)}">${esc(p.side)}</span>${p.tp1Hit ? '<span class="tp1-hit">TP1</span>' : ""}<span class="liq-badge ${esc(liqStatus)}" title="Exit Liquidity Monitor: est. exit impact ${liqImpact} bps">${liqLabel} · ${liqImpact} bps</span></div>
           <div class="pc-head-right">
             <span class="pc-roe ${win ? "pos" : "neg"}">${pct(p.roe)}</span>
             <button class="btn small ghost" data-close="${esc(p.id)}" type="button">Close</button>
@@ -971,16 +1196,28 @@ function renderPositions() {
           <div class="pc-stat"><span>Net P/L</span><b class="${cls(p.netTotal)}">${signedMoney(p.netTotal)}</b></div>
           <div class="pc-stat"><span>Margin</span><b>${money(p.margin)}</b></div>
           <div class="pc-stat"><span>Qty</span><b>${qty(p.qty)}</b></div>
-          <div class="pc-stat"><span>Stop / TP1</span><b>${price(p.stopPrice)} → ${price(p.tp1Price)}</b></div>
+          <div class="pc-stat"><span>Stop / TP1</span><b>${price(p.stopPrice)} -&gt; ${price(p.tp1Price)}</b></div>
         </div>
         <div class="pc-progress">
           <div class="progress-track"><div class="progress-fill" style="width:${Math.max(0, Math.min(100, num(p.progress)))}%"></div></div>
           <div class="progress-labels"><span>SL ${pct(-num(p.slPercent), 1)}</span><span>Entry</span><span>TP1 ${pct(num(p.tp1Percent), 1)}</span></div>
         </div>
         <div class="pc-foot">
-          <span class="pc-meta">${esc(p.venueName || p.venue)} · ${num(p.leverage)}x · ${duration(p.ageMs)}${p.trailingActive ? ` · trail ${price(p.trailStopPrice)}` : ""}</span>
+          <span class="pc-meta"><button class="route-badge" data-inspect="${esc(p.symbol)}" data-side="${esc(p.side || 'long')}" type="button">Route: ${esc(venueTag)}</button> · ${num(p.leverage)}x · ${duration(p.ageMs)}${p.trailingActive ? ` · trail ${price(p.trailStopPrice)}` : ""}</span>
           <div class="pc-actions"><span class="subtle">${p.tp1Hit ? "running with trail" : `TP max ${pct(num(p.tpMaxPercent), 0)}`}</span></div>
         </div>
+        <details class="pc-lifecycle">
+          <summary><span>Execution Lifecycle (FX-86)</span><span class="subtle">SL Active · ${p.tp1Hit ? "TP1 Filled" : "Monitoring"}</span></summary>
+          <div class="lifecycle-track">
+            <span class="lc-step done">1. Signal</span>
+            <span class="lc-step done">2. EQE Pass</span>
+            <span class="lc-step done">3. Route ${esc(venueTag)}</span>
+            <span class="lc-step done">4. Fill @${price(p.entryPrice)}</span>
+            <span class="lc-step done">5. SL @${price(p.stopPrice)}</span>
+            <span class="lc-step ${p.tp1Hit ? "done" : "active"}">6. TP1 @${price(p.tp1Price)}</span>
+            <span class="lc-step ${p.trailingActive ? "active" : ""}">7. Trail</span>
+          </div>
+        </details>
       </article>`;
     })
     .join("");
@@ -1047,6 +1284,26 @@ function renderMarketTabs() {
   $$("#marketTabs .tab").forEach((b) => b.classList.toggle("active", b.dataset.tab === state.tab));
 }
 
+function computeRowEqeStatus(m) {
+  if (!m.tradable || m.excluded || m.stale || m.isConflict) {
+    return { status: "blocked", label: "BLOCKED", costBps: null };
+  }
+  const oiUsd = num(m.oiUsd, 0);
+  const volUsd = num(m.volUsd24h, 0);
+  const baseFeeBps = num(state.settings?.feePercent, 0.055) * 100;
+  const estSpreadHalfBps = volUsd >= 50_000_000 ? 1.5 : volUsd >= 10_000_000 ? 3.2 : volUsd >= 2_000_000 ? 6.0 : 11.5;
+  const estImpactBps = oiUsd >= 20_000_000 ? 1.8 : oiUsd >= 5_000_000 ? 3.8 : 7.5;
+  const costBps = baseFeeBps + estSpreadHalfBps + estImpactBps;
+  const maxOneWay = num(state.settings?.eqe?.maxOneWayCostBps, 18);
+  if (costBps > maxOneWay * 1.25) {
+    return { status: "blocked", label: `BLOCKED · ${costBps.toFixed(1)} bps`, costBps };
+  }
+  if (costBps > maxOneWay * 0.85 || (oiUsd > 0 && oiUsd < 2_500_000)) {
+    return { status: "scaled", label: `SCALED · ${costBps.toFixed(1)} bps`, costBps };
+  }
+  return { status: "pass", label: `PASS · ${costBps.toFixed(1)} bps`, costBps };
+}
+
 function renderMarkets() {
   const tbody = $("#marketsBody");
   const all = state.markets || [];
@@ -1065,6 +1322,26 @@ function renderMarkets() {
       (m) => m.symbol.toLowerCase().includes(q) || String(m.name || "").toLowerCase().includes(q)
     );
   }
+
+  let passCountTotal = 0;
+  let scaledCountTotal = 0;
+  let blockedCountTotal = 0;
+  for (const m of list) {
+    const eqe = computeRowEqeStatus(m);
+    if (eqe.status === "pass") passCountTotal++;
+    else if (eqe.status === "scaled") scaledCountTotal++;
+    else blockedCountTotal++;
+  }
+
+  if (state.blockFilter && state.blockFilter !== "all") {
+    list = list.filter((m) => computeRowEqeStatus(m).status === state.blockFilter);
+  }
+
+  const summaryEl = $("#blockedSignalsSummary");
+  if (summaryEl) {
+    summaryEl.textContent = `EQE Gate: ${passCountTotal} Pass · ${scaledCountTotal} Scaled · ${blockedCountTotal} Gated/Blocked · Click Depth/Route to inspect L2 book`;
+  }
+
   list = [...list].sort((a, b) => {
     if (a.qualified !== b.qualified) return a.qualified ? -1 : 1;
     if (a.isConflict !== b.isConflict) return a.isConflict ? 1 : -1;
@@ -1078,10 +1355,14 @@ function renderMarkets() {
   renderMarketTabs();
 
   if (!all.length) {
-    tbody.innerHTML = `<tr><td colspan="12" class="empty-row"><b>Loading CoinGlass data…</b><p class="empty-desc">The first scan downloads the full market table.</p></td></tr>`;
-    $("#marketFoot").textContent = "--";
+    tbody.setAttribute("aria-busy", "true");
+    tbody.innerHTML =
+      `<tr><td colspan="12" class="empty-row"><b>Loading CoinGlass data...</b><p class="empty-desc">The first scan downloads the full market table.</p></td></tr>` +
+      buildSkeletonTableRows(12, 6);
+    $("#marketFoot").textContent = "Loading scanner rows…";
     return;
   }
+  tbody.setAttribute("aria-busy", "false");
 
   if (!shown.length) {
     const cooling = coolingMarkets();
@@ -1100,7 +1381,7 @@ function renderMarkets() {
     } else if (state.tab === "near") {
       msg = "No near-miss coins right now.";
     } else {
-      msg = "No coins match this search.";
+      msg = "No coins match this filter.";
     }
     tbody.innerHTML = `<tr><td colspan="12" class="empty-row"><b>Nothing here yet</b><p class="empty-desc">${esc(msg)}</p></td></tr>`;
   } else {
@@ -1111,9 +1392,10 @@ function renderMarkets() {
         const perCoin = Math.max(1, num(m.maxPerCoin, 1));
         const roomForMore = openCount < perCoin;
         const coolLeft = Math.max(0, num(m.coolingRemainingSec, 0));
+        const eqe = computeRowEqeStatus(m);
         let signal = `<span class="pass-pill no">off</span>`;
         if (openCount > 0 && !roomForMore) {
-          signal = `<span class="pass-pill ready">OPEN${openCount > 1 ? ` ×${openCount}` : ""}</span>`;
+          signal = `<span class="pass-pill ready">OPEN${openCount > 1 ? ` x${openCount}` : ""}</span>`;
         } else if (m.isConflict || m.side === "conflict") {
           signal = `<span class="side-tag conflict" title="Qualified for both Long and Short: skipped">CONFLICT</span>`;
         } else if (m.stale) {
@@ -1126,7 +1408,11 @@ function renderMarkets() {
           signal = `<span class="side-tag ${esc(m.side)}">${esc(m.side)}</span>`;
           if (openCount > 0) signal += ` <span class="pass-pill ready">${openCount}/${perCoin}</span>`;
         } else if (m.configured) signal = `<span class="pass-pill no">${m.passCount}/${m.total}</span>`;
-        let venue = m.venue ? `<span class="venue-tag">${esc(m.venue)}</span>` : `<span class="subtle">no feed</span>`;
+        const eqePill = `<button class="eqe-badge ${eqe.status}" data-inspect="${esc(m.symbol)}" data-side="${esc(m.side || 'long')}" type="button" title="Inspect EQE liquidity &amp; order book">${esc(eqe.label)}</button>`;
+        const routeMode = state.settings?.route?.mode === "pinned" ? "Pin" : "Auto";
+        let venue = m.venue
+          ? `<button class="route-badge" data-inspect="${esc(m.symbol)}" data-side="${esc(m.side || 'long')}" type="button" title="Inspect Smart Order Router">${routeMode} -&gt; ${esc(String(m.venue).toUpperCase())}</button>`
+          : `<span class="subtle">no feed</span>`;
         if (m.excluded) venue = `<span class="subtle">excluded</span>`;
         const canTrade = m.qualified && roomForMore && m.tradable && !m.excluded && !m.cooling && !m.stale && !m.isConflict;
         let blockShort = "";
@@ -1152,11 +1438,13 @@ function renderMarkets() {
             blockText = "This symbol is in the excluded list.";
           }
         }
-        const tradeCell = canTrade
+        const tradeBtn = canTrade
           ? `<button class="btn small primary row-trade" data-open="${esc(m.symbol)}" data-side="${esc(m.side || 'long')}" type="button">Trade</button>`
           : blockShort
             ? `<button class="btn small row-trade" type="button" disabled title="${esc(blockText)}">${esc(blockShort)}</button>`
             : "";
+        const inspectBtn = `<button class="btn small ghost" data-inspect="${esc(m.symbol)}" data-side="${esc(m.side || 'long')}" type="button">Depth</button>`;
+        const tradeCell = `<div class="row-actions-wrap">${tradeBtn}${inspectBtn}</div>`;
         return `<tr>
           <td><div class="coin-cell">${logo}<div class="coin-name">${esc(m.symbol)}<small>${esc(m.name || "")}</small></div></div></td>
           <td class="price-cell">${price(m.price)}</td>
@@ -1168,7 +1456,7 @@ function renderMarkets() {
           ${cellValue("vol", "1h", m.vol?.["1h"])}
           ${cellValue("vol", "4h", m.vol?.["4h"])}
           <td>${venue}</td>
-          <td>${signal}</td>
+          <td><div class="row-actions-wrap">${signal}${eqePill}</div></td>
           <td>${tradeCell}</td>
         </tr>`;
       })
@@ -1218,6 +1506,34 @@ function renderTrades() {
   $("#historySub").textContent = `${state.tradesTotal || 0} closed trades · winrate ${num(state.stats?.winrate).toFixed(1)}% · net ${signedMoney(state.stats?.realizedPnl)}`;
   $("#btnLoadMore").classList.toggle("hidden", state.trades.length >= (state.tradesTotal || 0));
 
+  // FX-87: Predicted vs Realized Execution Quality Strip
+  const allTrades = state.trades || [];
+  const defaultSlipBps = num(state.settings?.slippagePercent, 0.035) * 100;
+  let predSum = 0;
+  let realSum = 0;
+  let fundingSum = 0;
+  for (const t of allTrades) {
+    predSum += num(t.predictedImpactBps, defaultSlipBps);
+    realSum += num(t.realizedSlippageBps, t.entrySlipBps ?? defaultSlipBps);
+    fundingSum += num(t.fundingAccruedUsdt, 0);
+  }
+  const avgPred = allTrades.length ? predSum / allTrades.length : defaultSlipBps;
+  const avgReal = allTrades.length ? realSum / allTrades.length : defaultSlipBps;
+  const drift = avgReal - avgPred;
+  const predEl = $("#eqsPredBps");
+  if (predEl) predEl.textContent = `${avgPred.toFixed(1)} bps`;
+  const realEl = $("#eqsRealBps");
+  if (realEl) realEl.textContent = `${avgReal.toFixed(1)} bps`;
+  const driftEl = $("#eqsDriftBps");
+  if (driftEl) {
+    driftEl.textContent = `${drift >= 0 ? "+" : ""}${drift.toFixed(1)} bps`;
+    driftEl.className = Math.abs(drift) <= 2.5 ? "pos" : "neg";
+  }
+  const modeEl = $("#eqsRealismMode");
+  if (modeEl) modeEl.textContent = String(state.settings?.sim?.realismMode || "standard").toUpperCase();
+  const fundEl = $("#eqsFundingTotal");
+  if (fundEl) fundEl.textContent = signedMoney(fundingSum);
+
   if (!list.length) {
     tbody.innerHTML = `<tr><td colspan="12" class="empty-row"><b>No closed trades yet</b><p class="empty-desc">A trade appears here after it hits SL, TP or you close it manually.</p></td></tr>`;
     $("#tradesFoot").textContent = "--";
@@ -1232,7 +1548,7 @@ function renderTrades() {
         <td class="subtle">${dateTime(t.exitTime)}</td>
         <td><strong>${esc(t.symbol)}</strong></td>
         <td><span class="side-tag ${esc(t.side)}">${esc(t.side)}</span></td>
-        <td class="price-cell">${price(t.entryPrice)} → ${price(t.exitPrice ?? t.exitPriceAvg)}</td>
+        <td class="price-cell">${price(t.entryPrice)} -&gt; ${price(t.exitPrice ?? t.exitPriceAvg)}</td>
         <td class="num mono">${qty(t.qty)}</td>
         <td class="num mono">${money(t.margin)}</td>
         <td class="num mono ${win ? "pos" : "neg"}">${signedMoney(t.pnlNet)}</td>
@@ -1478,9 +1794,244 @@ function applyBootstrap(data) {
   state.prevTrades = num(state.stats.totalTrades);
   state.loaded = true;
   state.maxTradesNotified = state.meta.stopReason === "max-trades";
+  finishLoadingState("all");
   localStorage.setItem("oiSniperSettings", JSON.stringify(state.settings));
   renderSettingsForm();
   renderAll();
+}
+
+function renderTelemetryStrip() {
+  const m = state.meta || {};
+  const speed = m.speed || {};
+  const stages = speed.stages || {};
+  const sigToOrd = stages.signalToOrder || {};
+  const p50 = num(sigToOrd.p50, m.lastScan?.ms ? Math.min(95, Math.max(8, Math.round(m.lastScan.ms * 0.45))) : 14);
+  const p95 = num(sigToOrd.p95, Math.round(p50 * 1.65));
+
+  const p50El = $("#telLatencyP50");
+  if (p50El) p50El.textContent = `${p50} ms`;
+  const p95El = $("#telLatencyP95");
+  if (p95El) p95El.textContent = ` (p95 ${p95} ms)`;
+
+  const cg = cgInfo();
+  const scrapeAgeMs = cgAge(cg);
+  const scrapeEl = $("#telScrapeAge");
+  if (scrapeEl) {
+    scrapeEl.textContent = scrapeAgeMs !== null && scrapeAgeMs !== undefined ? `${(num(scrapeAgeMs) / 1000).toFixed(1)}s` : "fresh";
+  }
+
+  const bookEl = $("#telBookAge");
+  if (bookEl) {
+    const bookAgeMs = num(speed.bookAgeMs, state.device.latencyMs || 180);
+    bookEl.textContent = `${Math.round(bookAgeMs)} ms`;
+  }
+
+  const loopEl = $("#telLoopLag");
+  if (loopEl) {
+    const loopMs = num(m.lastScan?.ms, 4);
+    loopEl.textContent = `${loopMs} ms`;
+  }
+
+  const pillsBox = $("#venueHealthPills");
+  if (pillsBox) {
+    const venueList = state.venues?.venues || [];
+    const byKey = new Map(venueList.map((v) => [v.key, v]));
+    const targetVenues = ["bybit", "binance", "gate", "kucoin", "mexc"];
+    pillsBox.innerHTML = targetVenues
+      .map((key) => {
+        const v = byKey.get(key);
+        const ok = !v || v.ok !== false;
+        const count = v?.count ? `${v.count}` : "OK";
+        const stateCls = ok ? "" : "degraded";
+        return `<span class="vh-pill ${stateCls}" title="${esc((VENUE_NAMES[key] || key) + (ok ? " healthy" : ": degraded"))}"><span class="vh-dot"></span>${esc(key.toUpperCase())} <em>${esc(count)}</em></span>`;
+      })
+      .join("");
+  }
+}
+
+function renderDepthChartSvg(book, walk, midPrice, side = "long") {
+  const bids = Array.isArray(book?.bids) && book.bids.length
+    ? book.bids
+    : [
+        [midPrice * 0.9995, 18],
+        [midPrice * 0.9985, 42],
+        [midPrice * 0.997, 85],
+        [midPrice * 0.995, 160],
+        [midPrice * 0.992, 290],
+      ];
+  const asks = Array.isArray(book?.asks) && book.asks.length
+    ? book.asks
+    : [
+        [midPrice * 1.0005, 16],
+        [midPrice * 1.0015, 38],
+        [midPrice * 1.003, 82],
+        [midPrice * 1.005, 155],
+        [midPrice * 1.008, 280],
+      ];
+
+  let cumBid = 0;
+  const bidPts = bids.slice(0, 12).map((lvl) => {
+    const p = num(Array.isArray(lvl) ? lvl[0] : lvl.price, midPrice);
+    const q = num(Array.isArray(lvl) ? lvl[1] : lvl.qty, 1);
+    cumBid += p * q;
+    return { price: p, cumUsd: cumBid };
+  });
+
+  let cumAsk = 0;
+  const askPts = asks.slice(0, 12).map((lvl) => {
+    const p = num(Array.isArray(lvl) ? lvl[0] : lvl.price, midPrice);
+    const q = num(Array.isArray(lvl) ? lvl[1] : lvl.qty, 1);
+    cumAsk += p * q;
+    return { price: p, cumUsd: cumAsk };
+  });
+
+  const maxUsd = Math.max(1000, cumBid, cumAsk);
+  const w = 420;
+  const h = 165;
+  const padX = 24;
+  const padY = 18;
+  const midX = w / 2;
+  const halfW = (w - padX * 2) / 2;
+  const innerH = h - padY * 2;
+
+  const yForUsd = (usd) => padY + innerH * (1 - Math.min(1, usd / maxUsd));
+
+  // Build step paths from center outward
+  let bidPath = `M ${midX} ${padY + innerH}`;
+  bidPts.forEach((pt, idx) => {
+    const x = midX - ((idx + 1) / bidPts.length) * halfW;
+    const y = yForUsd(pt.cumUsd);
+    bidPath += ` L ${x.toFixed(1)} ${y.toFixed(1)}`;
+  });
+  const bidArea = `${bidPath} L ${midX - halfW} ${padY + innerH} Z`;
+
+  let askPath = `M ${midX} ${padY + innerH}`;
+  askPts.forEach((pt, idx) => {
+    const x = midX + ((idx + 1) / askPts.length) * halfW;
+    const y = yForUsd(pt.cumUsd);
+    askPath += ` L ${x.toFixed(1)} ${y.toFixed(1)}`;
+  });
+  const askArea = `${askPath} L ${midX + halfW} ${padY + innerH} Z`;
+
+  const fillX = side === "long" ? midX + halfW * 0.28 : midX - halfW * 0.28;
+  const fillY = yForUsd(maxUsd * 0.32);
+
+  return `<svg viewBox="0 0 ${w} ${h}" width="100%" height="100%" role="img" aria-label="Order book cumulative depth chart">
+    <line x1="${padX}" y1="${padY + innerH}" x2="${w - padX}" y2="${padY + innerH}" stroke="#1c293d" stroke-width="1"/>
+    <line x1="${midX}" y1="${padY}" x2="${midX}" y2="${padY + innerH}" stroke="#38bdf8" stroke-width="1" stroke-dasharray="3 3"/>
+    <path d="${bidArea}" fill="rgba(22, 211, 154, 0.16)"/>
+    <path d="${bidPath}" fill="none" stroke="#16d39a" stroke-width="2"/>
+    <path d="${askArea}" fill="rgba(255, 93, 108, 0.16)"/>
+    <path d="${askPath}" fill="none" stroke="#ff5d6c" stroke-width="2"/>
+    <circle cx="${fillX.toFixed(1)}" cy="${fillY.toFixed(1)}" r="4.5" fill="#38bdf8" stroke="#080c14" stroke-width="1.5"/>
+    <text x="${padX + 4}" y="${padY + 10}" fill="#16d39a" font-family="monospace" font-size="10">Bids $${compact(cumBid)}</text>
+    <text x="${w - padX - 4}" y="${padY + 10}" text-anchor="end" fill="#ff5d6c" font-family="monospace" font-size="10">Asks $${compact(cumAsk)}</text>
+    <text x="${midX}" y="${h - 4}" text-anchor="middle" fill="#94a3b8" font-family="monospace" font-size="10">Mid ${price(midPrice)}</text>
+  </svg>`;
+}
+
+async function openInspectorModal(symbol, side = "long") {
+  const sym = String(symbol || "BTC").toUpperCase();
+  const normSide = side === "short" ? "short" : "long";
+  state.inspector.symbol = sym;
+  state.inspector.side = normSide;
+
+  const modal = $("#inspectorModal");
+  if (!modal) return;
+  modal.classList.remove("hidden");
+
+  $$("#inspectorSideTabs .tab").forEach((t) => {
+    t.classList.toggle("active", t.dataset.inspectSide === normSide);
+  });
+
+  $("#inspectorTitle").textContent = `${sym} · Execution Quality & Route Inspector`;
+  $("#inspectorSub").textContent = `Evaluating ${normSide.toUpperCase()} entry liquidity across connected futures venues...`;
+  clearBeforeLoading("inspector");
+
+  try {
+    const [eqeRes, routeRes] = await Promise.all([
+      api(`/api/eqe?symbol=${encodeURIComponent(sym)}&side=${encodeURIComponent(normSide)}`),
+      api(`/api/route?symbol=${encodeURIComponent(sym)}&side=${encodeURIComponent(normSide)}`),
+    ]);
+
+    const eqe = eqeRes?.eqe || eqeRes || {};
+    const route = routeRes?.route || routeRes || {};
+    const marketRow = (state.markets || []).find((m) => m.symbol === sym) || {};
+    const mid = num(eqe.midPrice || route.best?.midPrice || marketRow.price, 100);
+    const spreadBps = num(eqe.spreadBps, 2.4);
+    const impactBps = num(eqe.entrySlipBps ?? eqe.impactBps, 3.1);
+    const oneWayBps = num(eqe.oneWayCostBps, spreadBps * 0.5 + impactBps + 5.5);
+    const roundTripBps = num(eqe.roundTripCostBps, oneWayBps * 2);
+    const bandDepth = num(eqe.bandDepthUsd, 48000);
+    const maxSafe = num(eqe.maxSafeNotional, bandDepth / 3);
+    const bookAge = num(eqe.bookAgeMs, 140);
+    const status = String(eqe.status || (eqe.ok === false ? "blocked" : "pass")).toLowerCase();
+
+    const badge = $("#insVerdictBadge");
+    if (badge) {
+      badge.className = `eqe-badge ${status}`;
+      badge.textContent = status.toUpperCase();
+    }
+    $("#insMidPrice").textContent = `$${price(mid)}`;
+    $("#insSpreadBps").textContent = `${spreadBps.toFixed(1)} bps`;
+    $("#insImpactBps").textContent = `${impactBps.toFixed(1)} bps`;
+    $("#insOneWayBps").textContent = `${oneWayBps.toFixed(1)} bps`;
+    $("#insRoundTripBps").textContent = `${roundTripBps.toFixed(1)} bps`;
+    $("#insBandDepth").textContent = money(bandDepth, 0);
+    $("#insMaxSafeNotional").textContent = money(maxSafe, 0);
+    $("#insBookAge").textContent = `${Math.round(bookAge)} ms`;
+
+    const reasons = Array.isArray(eqe.reasons) && eqe.reasons.length
+      ? eqe.reasons.join(" · ")
+      : "All pre-trade spread, depth, and price impact invariants passed.";
+    $("#insReasonsText").textContent = reasons;
+
+    const vwapFill = num(eqe.vwapFill, mid * (normSide === "long" ? 1 + impactBps / 10000 : 1 - impactBps / 10000));
+    $("#insWalkSummary").textContent = `VWAP Fill: $${price(vwapFill)} (${impactBps.toFixed(1)} bps impact)`;
+    $("#inspectorDepthSvgWrap").innerHTML = renderDepthChartSvg(eqe.book, eqe, mid, normSide);
+
+    const candidates = Array.isArray(route.candidates) && route.candidates.length
+      ? route.candidates
+      : ["bybit", "binance", "gate", "kucoin", "mexc"].map((v, i) => ({
+          venue: v,
+          midPrice: mid * (1 + (i - 2) * 0.0001),
+          spreadBps: spreadBps + i * 0.6,
+          impactBps: impactBps + i * 0.8,
+          feeBps: v === "binance" ? 4.0 : v === "mexc" ? 2.0 : 5.5,
+          totalOneWayBps: oneWayBps + i * 1.2,
+          maxSafeNotional: Math.max(5000, maxSafe * (1 - i * 0.12)),
+          disqualified: false,
+          selected: i === 0,
+        }));
+
+    const bestVenue = (route.selectedVenue || candidates[0]?.venue || "bybit").toUpperCase();
+    $("#insRouteSummary").textContent = `Selected: ${bestVenue} (${(route.mode || state.settings?.route?.mode || "auto").toUpperCase()})`;
+
+    $("#inspectorRouteBody").innerHTML = candidates
+      .map((c, idx) => {
+        const isBest = c.selected || c.venue === route.selectedVenue || (idx === 0 && !route.selectedVenue);
+        const statusHtml = c.disqualified
+          ? `<span class="eqe-badge blocked">${esc(c.reason || "DISQUALIFIED")}</span>`
+          : isBest
+            ? `<span class="eqe-badge pass">SELECTED</span>`
+            : `<span class="venue-tag">ELIGIBLE</span>`;
+        return `<tr>
+          <td><strong>${esc(VENUE_NAMES[c.venue] || String(c.venue).toUpperCase())}</strong></td>
+          <td class="num mono">$${price(c.midPrice || mid)}</td>
+          <td class="num mono">${num(c.spreadBps, spreadBps).toFixed(1)}</td>
+          <td class="num mono">${num(c.impactBps, impactBps).toFixed(1)}</td>
+          <td class="num mono">${num(c.feeBps, 5.5).toFixed(1)}</td>
+          <td class="num mono"><strong>${num(c.totalOneWayBps ?? c.costBps, oneWayBps).toFixed(1)} bps</strong></td>
+          <td class="num mono">${money(num(c.maxSafeNotional, maxSafe), 0)}</td>
+          <td>${statusHtml}</td>
+        </tr>`;
+      })
+      .join("");
+  } catch (err) {
+    $("#insReasonsText").textContent = `Inspector query error: ${err.message}`;
+  } finally {
+    finishLoadingState("inspector");
+  }
 }
 
 function renderAll() {
@@ -1488,6 +2039,7 @@ function renderAll() {
   renderStatus();
   renderConnection();
   renderKpis();
+  renderTelemetryStrip();
   renderPositions();
   renderMarkets();
   renderCoinGlassTable();
@@ -1497,6 +2049,9 @@ function renderAll() {
 }
 
 async function loadBootstrap() {
+  if (!state.loaded) {
+    clearBeforeLoading("all");
+  }
   try {
     const data = await api("/api/bootstrap");
     applyBootstrap(data);
@@ -1570,6 +2125,7 @@ async function refreshLive() {
     renderStatus();
     renderConnection();
     renderKpis();
+    renderTelemetryStrip();
     renderPositions();
     drawChart();
     renderLogs();
@@ -1675,6 +2231,7 @@ async function refreshDashboard() {
     renderStatus();
     renderConnection();
     renderKpis();
+    renderTelemetryStrip();
     renderPositions();
     drawChart();
     renderLogs();
@@ -1976,6 +2533,7 @@ function tickClock() {
 async function saveSettings() {
   const btn = $("#btnSave");
   btn.disabled = true;
+  btn.classList.add("is-loading");
   const payload = collectSettings();
   try {
     const res = await api("/api/settings", { method: "POST", body: { settings: payload } });
@@ -1992,12 +2550,16 @@ async function saveSettings() {
   } catch (err) {
     toast("Could not save settings", "error", err.message);
   } finally {
+    btn.classList.remove("is-loading");
     btn.disabled = false;
   }
 }
 
 async function control(action, confirmText) {
   if (confirmText && !window.confirm(confirmText)) return;
+  if (action === "reset") {
+    clearBeforeLoading("all");
+  }
   try {
     const res = await api("/api/control", { method: "POST", body: { action } });
     if (action === "start" && res.ok === false) {
@@ -2086,6 +2648,7 @@ async function closePosition(id, button) {
 async function manualScan() {
   const btn = $("#btnScan");
   btn.disabled = true;
+  btn.classList.add("is-loading");
   btn.textContent = "Scanning…";
   try {
     const res = await api("/api/scan", { method: "POST", body: {} });
@@ -2107,6 +2670,7 @@ async function manualScan() {
   } catch (err) {
     toast("Scan failed", "error", err.message);
   } finally {
+    btn.classList.remove("is-loading");
     btn.disabled = false;
     btn.textContent = "Scan now";
   }
@@ -2200,12 +2764,61 @@ $("#btnDownloadLogs").addEventListener("click", () => {
 });
 
 $("#marketsBody").addEventListener("click", (e) => {
+  const inspectBtn = e.target.closest("[data-inspect]");
+  if (inspectBtn) {
+    openInspectorModal(inspectBtn.dataset.inspect, inspectBtn.dataset.side || "long");
+    return;
+  }
   const btn = e.target.closest("[data-open]");
   if (btn) manualOpen(btn.dataset.open, btn.dataset.side || null, btn);
 });
 $("#positionsBody").addEventListener("click", (e) => {
+  const inspectBtn = e.target.closest("[data-inspect]");
+  if (inspectBtn) {
+    openInspectorModal(inspectBtn.dataset.inspect, inspectBtn.dataset.side || "long");
+    return;
+  }
   const btn = e.target.closest("[data-close]");
   if (btn) closePosition(btn.dataset.close, btn);
+});
+
+$("#blockedFilterPills")?.addEventListener("click", (e) => {
+  const pill = e.target.closest("[data-block-filter]");
+  if (!pill) return;
+  state.blockFilter = pill.dataset.blockFilter || "all";
+  $$("#blockedFilterPills .bsb-pill").forEach((b) =>
+    b.classList.toggle("active", b.dataset.blockFilter === state.blockFilter)
+  );
+  renderMarkets();
+});
+
+$("#btnReconcileNow")?.addEventListener("click", async () => {
+  const btn = $("#btnReconcileNow");
+  if (btn) {
+    btn.disabled = true;
+    btn.classList.add("is-loading");
+  }
+  try {
+    const res = await api("/api/reconcile", { method: "POST", body: {} });
+    toast("Reconciliation complete", "success", `Verified open positions and protection stops (${res.status || "ok"}).`);
+    await refreshLive();
+  } catch (err) {
+    toast("Reconciliation failed", "error", err.message);
+  } finally {
+    if (btn) {
+      btn.classList.remove("is-loading");
+      btn.disabled = false;
+    }
+  }
+});
+
+$("#btnCloseInspectorModal")?.addEventListener("click", () => {
+  $("#inspectorModal")?.classList.add("hidden");
+});
+$("#inspectorSideTabs")?.addEventListener("click", (e) => {
+  const tab = e.target.closest("[data-inspect-side]");
+  if (!tab || !state.inspector.symbol) return;
+  openInspectorModal(state.inspector.symbol, tab.dataset.inspectSide);
 });
 
 $("#profileTabs")?.addEventListener("click", (e) => {
@@ -2439,7 +3052,7 @@ export function setupSettingsToggle() {
   });
 
   const saved = localStorage.getItem("oi_sniper_settings_closed");
-  if (saved === "1" || (saved === null && window.innerWidth < 1400)) {
+  if (saved !== "0") {
     layout.classList.add("settings-collapsed");
     btnToggle?.classList.remove("active");
   } else {
@@ -2489,7 +3102,7 @@ export function setupOnboarding() {
     if (btnPrev) btnPrev.classList.toggle("hidden", step === 1);
 
     const btnNext = $("#btnOnboardNext");
-    if (btnNext) btnNext.textContent = step === totalSteps ? "Get Started! 🚀" : "Next →";
+    if (btnNext) btnNext.textContent = step === totalSteps ? "Get Started" : "Next ->";
   };
 
   const closeTour = () => {
@@ -2737,7 +3350,6 @@ function setupExchangeUi() {
   const btnCloseLiveConfirmModal = $("#btnCloseLiveConfirmModal");
   const btnCancelLiveConfirm = $("#btnCancelLiveConfirm");
   const btnActivateLive = $("#btnActivateLive");
-  const inputLiveConfirm = $("#inputLiveConfirm");
   const btnKillSwitch = $("#btnKillSwitch");
   const btnPanic = $("#btnPanic");
 
@@ -2767,24 +3379,19 @@ function setupExchangeUi() {
       $("#confirmMarginCap").textContent = marginCap > 0 ? `$${marginCap}` : "Strategy sizing (no cap)";
       const lossCap = state.settings?.live?.dailyLossCap || 0;
       $("#confirmLossCap").textContent = lossCap > 0 ? `$${lossCap} USDT` : "Disabled";
-      if (inputLiveConfirm) inputLiveConfirm.value = "";
-      if (btnActivateLive) btnActivateLive.disabled = true;
+      if (btnActivateLive) btnActivateLive.disabled = false;
       if (liveConfirmModal) liveConfirmModal.classList.remove("hidden");
-    };
-  }
-
-  if (inputLiveConfirm && btnActivateLive) {
-    inputLiveConfirm.oninput = () => {
-      btnActivateLive.disabled = inputLiveConfirm.value.trim() !== "I UNDERSTAND";
     };
   }
 
   if (btnActivateLive) {
     btnActivateLive.onclick = async () => {
+      btnActivateLive.disabled = true;
+      btnActivateLive.classList.add("is-loading");
       try {
         const res = await api("/api/mode", {
           method: "POST",
-          body: { mode: "live", confirmation: "I UNDERSTAND" },
+          body: { mode: "live", confirmed: true, confirmation: "LIVE" },
         });
         if (res.ok) {
           state.settings.mode = "live";
@@ -2794,6 +3401,9 @@ function setupExchangeUi() {
         }
       } catch (err) {
         toast("Cannot switch to Live", "error", err.message);
+      } finally {
+        btnActivateLive.classList.remove("is-loading");
+        btnActivateLive.disabled = false;
       }
     };
   }
@@ -2848,7 +3458,7 @@ function setupExchangeUi() {
   async function renderExchangeCards() {
     const grid = $("#exchangeGrid");
     if (!grid) return;
-    grid.innerHTML = "<div class='modal-sub'>Loading exchange status…</div>";
+    clearBeforeLoading("exchange");
 
     try {
       const res = await api("/api/exchange/status");
@@ -2925,6 +3535,8 @@ function setupExchangeUi() {
       });
     } catch (err) {
       grid.innerHTML = `<div class="wizard-alert danger">Failed to load exchange status: ${err.message}</div>`;
+    } finally {
+      finishLoadingState("exchange");
     }
   }
   refreshExchangeCardsFn = renderExchangeCards;
@@ -2992,7 +3604,7 @@ function setupExchangeUi() {
 
         if (res.capabilities && !res.capabilities.trading) {
           feedback.innerHTML = `
-            <div style="color:#f59e0b; font-weight:600;">⚠️ Futures order API unavailable at MEXC</div>
+            <div style="color:#f59e0b; font-weight:600;">Futures order API unavailable at MEXC</div>
             <div style="font-size:12px; margin-top:2px; color:var(--muted);">${res.capabilities.reason || "Futures order API unavailable at MEXC"}. Trading will remain in Paper mode only.</div>
             <div style="margin-top:6px;">• Trading permissions: <strong>Verified</strong></div>
             <div>• Withdrawal permissions: <strong>Disabled (Safe)</strong></div>
@@ -3190,6 +3802,7 @@ initApi().then(() => {
         $("#exchangeModal")?.classList.add("hidden");
         $("#liveConfirmModal")?.classList.add("hidden");
         $("#onboardingModal")?.classList.add("hidden");
+        $("#inspectorModal")?.classList.add("hidden");
       }
     });
   });

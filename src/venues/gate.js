@@ -113,7 +113,17 @@ export class GateAdapter extends ExchangeAdapter {
    * Venue execution capabilities.
    */
   capabilities() {
-    return { trading: true };
+    return {
+      trading: true,
+      ioc: true,
+      attachedSlTp: false,
+      conditionalEndpoint: true,
+      nativeTrail: false,
+      atomicAmend: true,
+      privateWs: true,
+      closePositionStop: true,
+      testnet: true,
+    };
   }
 
   /**

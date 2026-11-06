@@ -152,4 +152,22 @@ export function parsePresetHash(hashStr) {
   return parsed;
 }
 
+import { sanitizeImportedPreset } from "./core/riskGuards.js";
+
+/**
+ * Parses and risk-clamps an untrusted imported preset URL hash (`EC-65`).
+ * Forces `mode: "paper"`, `eqe.enabled: true`, `leverage <= 50`, `allocationPercent <= 50`,
+ * and strips all credentials.
+ */
+export function parseSanitizedPresetHash(hashStr) {
+  const parsed = parsePresetHash(hashStr);
+  const res = sanitizeImportedPreset(parsed);
+  return {
+    ...res.preset,
+    _warnings: res.warnings,
+    _sanitized: res.sanitized,
+  };
+}
+
+export { sanitizeImportedPreset };
 export { deepMerge } from "./util.js";

@@ -20,7 +20,38 @@ export class ExchangeAdapter {
    * @returns {{ trading: boolean, reason?: string }}
    */
   capabilities() {
-    return { trading: true };
+    return {
+      trading: true,
+      ioc: false,
+      attachedSlTp: false,
+      conditionalEndpoint: false,
+      nativeTrail: false,
+      atomicAmend: false,
+      privateWs: false,
+      closePositionStop: false,
+      testnet: false,
+    };
+  }
+
+  /**
+   * Place an IOC limit order (`FX-18`).
+   * Default implementation delegates to placeMarket if IOC is not overridden.
+   */
+  async placeIocLimit(o) {
+    return this.placeMarket(o);
+  }
+
+  /**
+   * Place and immediately cancel a post-only test order (`FX-25`).
+   */
+  async placePostOnlyTestOrder({ symbol, side = "long", qty = 1, price = 1, clientId }) {
+    const cid = clientId || `preflight_${Date.now()}`;
+    const order = await this.placeReduceLimit({ symbol, side, qty, price, clientId: cid });
+    const oid = order?.orderId || order?.id;
+    if (oid) {
+      await this.cancel({ symbol, orderId: oid, clientId: cid }).catch(() => {});
+    }
+    return { ok: true, orderId: oid };
   }
 
   /**
