@@ -6,8 +6,9 @@
  * Enforces the 20s stale gate (D4) and scrape failure stop-new-entries safety gate (D5).
  */
 
+import { fetchCoinMarketsViaApi } from "../src/coinglass.js";
+
 const CAP = "https://capi.coinglass.com";
-const API_BASE = "https://open-api-v4.coinglass.com";
 const PAGE_SIZE = 100;
 const ASSET_TAG = "crypto";
 const ZERO_IV = new Uint8Array(16);
@@ -224,6 +225,7 @@ export class CoinGlassWorkerClient {
       lastAttemptAt: 0,
       lastSuccessAt: 0,
       lastError: null,
+      apiError: null,
       lastLatencyMs: 0,
       consecutiveFailures: 0,
       totalSuccesses: 0,
@@ -240,6 +242,7 @@ export class CoinGlassWorkerClient {
   setApiKey(key) {
     this._apiKey = key ? String(key).trim() : null;
     this.status.apiKeySet = Boolean(this._apiKey);
+    this.status.apiError = null;
     this.status.source = this._apiKey ? "api" : "scrape";
   }
 
@@ -254,8 +257,17 @@ export class CoinGlassWorkerClient {
 
     try {
       let result;
+      let source = this._apiKey ? "api" : "scrape";
       if (this._apiKey) {
-        result = await this._fetchViaOfficialApi();
+        try {
+          result = await this._fetchViaOfficialApi();
+        } catch (apiError) {
+          // A revoked/expired key (or a plan without Futures access) must not
+          // freeze the feed forever: fall back to the public table instead.
+          this.status.apiError = String(apiError?.message || apiError);
+          source = "scrape";
+          result = await this._fetchScrape();
+        }
       } else {
         result = await this._fetchScrape();
       }
@@ -269,6 +281,8 @@ export class CoinGlassWorkerClient {
         error: null,
       };
 
+      if (source === "api") this.status.apiError = null;
+      this.status.source = source;
       this.status.state = "connected";
       this.status.connected = true;
       this.status.stale = false;
@@ -331,17 +345,18 @@ export class CoinGlassWorkerClient {
   }
 
   async _fetchViaOfficialApi() {
-    const res = await fetch(`${API_BASE}/api/futures/openInterest/ohlc`, {
-      headers: {
-        accept: "application/json",
-        coinglassSecret: this._apiKey,
-      },
-    });
-    if (!res.ok) throw new Error(`Official CoinGlass API error HTTP ${res.status}`);
-    const j = await res.json();
-    if (!j || j.code !== "0") throw new Error(j?.msg || "Official API error");
-    const rows = Array.isArray(j.data) ? j.data : [];
-    const coins = rows.map(normaliseCoin).filter((c) => c.symbol);
-    return { coins, total: coins.length, pages: 1 };
+    // Use the same official-API client as the Node engine: /api/futures/coins-markets
+    // with the CG-API-KEY header and snake_case field mapping. The previous
+    // implementation called a non-existent /api/futures/openInterest/ohlc
+    // endpoint with a `coinglassSecret` header, so every API-key user was
+    // permanently stuck behind the stop-new-entries gate.
+    const result = await fetchCoinMarketsViaApi(this._apiKey);
+    return {
+      coins: result.coins,
+      total: result.total,
+      pages: result.pages,
+      fetchedInMs: result.fetchedInMs,
+      source: "api",
+    };
   }
 }
