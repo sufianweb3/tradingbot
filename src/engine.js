@@ -2051,6 +2051,7 @@ export class Engine {
       marketAgeMs: this.marketCache.at ? now() - this.marketCache.at : null,
       coinglass: this.getMarketStatus(),
       coinglassKeySet: Boolean(String(this.state.settings.coinglassApiKey || "").trim()),
+      killSwitch: Boolean(this.killSwitchActive),
       tradesRemaining: max > 0 ? Math.max(0, max - stats.totalTrades) : null,
       maxTrades: max,
       maxOpenPositions: this.state.settings.maxOpenPositions,

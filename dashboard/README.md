@@ -1,16 +1,38 @@
-# OI Sniper — React dashboard preview
+# OI Sniper: React dashboard
 
 A clean, Apple-inspired execution dashboard for the CoinGlass open-interest paper-trading bot.
 
 Built with React 19, Vite 7, Tailwind CSS 4, TypeScript, Motion and Lucide.
 
-This app lives in `dashboard/` and is completely independent from the bot runtime in
-`src/`, `public/` and `web/`. It does not change the existing dashboard, the server or
-the trading engine.
+This app lives in `dashboard/`. When the bot is built it is compiled into
+`dist/dashboard/` and served at **`/dashboard/`**, while the original dashboard
+stays at **`/`**. It talks to the bot's JSON API on the same origin and falls back
+to local sample data when the API is unreachable.
 
 ## Run locally
 
-From the repository root:
+Two options.
+
+**Through the bot (real API, recommended):**
+
+```bash
+npm run build      # builds public/, web/, src/ and dashboard/
+npm start          # then open http://127.0.0.1:3000/dashboard/
+```
+
+On Windows PowerShell, if `npm.ps1` is blocked by the execution policy, use
+`npm.cmd run build` and `npm.cmd start` instead.
+
+For UI iteration with the bot running separately:
+
+```bash
+npm run dev:dashboard   # Vite dev server on http://127.0.0.1:5173
+```
+
+The dev server proxies `/api` to `http://127.0.0.1:3000`, so start the bot with
+`npm start` in another terminal to see live data.
+
+**Standalone sample preview:**
 
 ```bash
 cd dashboard
@@ -18,12 +40,10 @@ npm install
 npm run dev
 ```
 
-Open **http://127.0.0.1:5173**.
+Open **http://127.0.0.1:5173**. Without the bot API the dashboard renders the
+bundled sample account and marks the data source as `Sample data` in the header.
 
-On Windows PowerShell, if `npm.ps1` is blocked by the execution policy, use
-`npm.cmd install` and `npm.cmd run dev` instead.
-
-For a production check:
+For a production check of the standalone app:
 
 ```bash
 npm run build
@@ -34,16 +54,19 @@ npm run preview
 
 | Route | Screen |
 | --- | --- |
-| `/` | Overview: equity curve, engine status, telemetry, positions, scanner, exposure and activity |
-| `/scanner` | Full scanner with tabs, side/sort filters, execution gate, search, signal detail and L2 inspector |
-| `/feed` | Raw CoinGlass market feed with OI/volume windows, search, sort and feed health |
-| `/positions` | Position cards with ROE, stop/TP ladder, route, exit liquidity and trade lifecycle |
-| `/performance` | Equity, drawdown, weekly returns, trade breakdown and HTML/CSV/JSON reports |
-| `/history` | Filterable, paginated trades with execution-quality calibration and CSV export |
-| `/strategy` | Profiles, sizing, exits, entry filters, execution gate, routing, universe, cadence and live guardrails |
-| `/exchanges` | Exchange vault: API keys, test/connect/disconnect, active venue, balances and live guardrails |
-| `/activity` | Scan, trade, risk and system timeline with JSONL log export and clear-view |
-| `/settings` | Appearance, execution mode, CoinGlass, notifications, data/backup, reports, guide and reset |
+| `/dashboard/` | Overview: equity curve, engine status, telemetry, positions, scanner, exposure and activity |
+| `/dashboard/scanner` | Full scanner with tabs, side/sort filters, execution gate, search, signal detail and L2 inspector |
+| `/dashboard/feed` | Raw CoinGlass market feed with OI/volume windows, search, sort and feed health |
+| `/dashboard/positions` | Position cards with ROE, stop/TP ladder, route, exit liquidity and trade lifecycle |
+| `/dashboard/performance` | Equity, drawdown, weekly returns, trade breakdown and HTML/CSV/JSON reports |
+| `/dashboard/history` | Filterable, paginated trades with execution-quality calibration and CSV export |
+| `/dashboard/strategy` | Profiles, sizing, exits, entry filters, execution gate, routing, universe, cadence and live guardrails |
+| `/dashboard/exchanges` | Exchange vault: API keys, test/connect/disconnect, active venue, balances and live guardrails |
+| `/dashboard/activity` | Scan, trade, risk and system timeline with JSONL log export and clear-view |
+| `/dashboard/settings` | Appearance, execution mode, CoinGlass, notifications, data/backup, reports, guide and reset |
+
+Standalone dev/preview runs at `/` because the Vite dev server is not behind the
+`/dashboard/` prefix.
 
 ## Included bot features
 
@@ -59,11 +82,12 @@ npm run preview
 
 ## Notes
 
-- This is a **UI preview with local sample data**. It does not call the bot API or an exchange.
-- Live mode, exchange keys, guardrails and test-connection results are simulated in the browser. No real order is submitted and API secrets are never stored or committed.
-- Numbers are simulated for the interface and reset on reload. Use Settings → Sample data to reset manually.
-- The account, strategy rules and feature surface mirror the bot in the repository root. The screens are intentionally not wired to the bot API yet.
-- To connect it later, point the store actions at the bot endpoints (`/api/dashboard`, `/api/settings`, `/api/scan`, `/api/trade/*`) and keep paper mode as the default.
+- The dashboard is wired to the bot's same-origin JSON API: `/api/bootstrap`, `/api/dashboard`, `/api/trades`, `/api/settings`, `/api/scan`, `/api/trade/*`, `/api/exchange/*`, `/api/mode`, `/api/kill-switch`, `/api/panic`, `/api/reconcile`, `/api/control`, `/api/coinglass/key` and `/api/backup/*`.
+- Paper mode is the default. Live orders are only routed after an exchange is connected, live mode is confirmed and the guardrails are saved.
+- When the API cannot be reached, the store keeps the last known state or seeds the sample account and shows `Sample data` in the header. Clicking that pill retries the connection.
+- API keys are sent to the bot and stored in its vault. They are never written to the repository and never returned to the browser.
+- The old dashboard remains at `/`; the React app is served at `/dashboard/` with a client-side routing fallback.
+- `npm run dev` builds the bot only (`--skip-dashboard`); use `npm run build` or `npm run build:dashboard` to include the React app in `dist/dashboard/`.
 
 ## Design system
 

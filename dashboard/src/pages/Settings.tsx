@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Check,
   Copy,
@@ -64,6 +64,11 @@ export default function SettingsPage() {
     liveGuardrails,
     updateLiveGuardrails,
     openExchangeWizard,
+    dataSource,
+    settings,
+    setCoinglassKey,
+    exportBackup: exportBackupApi,
+    importBackup: importBackupApi,
   } = useApp();
   const [apiKey, setApiKey] = useState("");
   const [source, setSource] = useState("scrape");
@@ -77,19 +82,38 @@ export default function SettingsPage() {
   const backupInputRef = useRef<HTMLInputElement>(null);
   const legacyInputRef = useRef<HTMLInputElement>(null);
 
-  const saveKey = () => {
+  useEffect(() => {
+    if (!settings) return;
+    setSource(settings.coinglassKeySet ? "api" : "scrape");
+  }, [settings]);
+
+  const saveKey = async () => {
     if (!apiKey.trim()) {
       notify("No key entered", "Paste a CoinGlass API key first, or clear the field.");
       return;
     }
-    notify(
-      "API key saved in this preview",
-      "The key stays in this browser session and is never sent by the interface.",
-    );
+    const ok = await setCoinglassKey(apiKey);
+    if (!ok) return;
     setApiKey("");
+    if (dataSource !== "live") {
+      notify(
+        "API key saved in this preview",
+        "The key stays in this browser session and is never sent by the interface.",
+      );
+    }
   };
 
-  const exportBackup = () => {
+  const exportBackup = async () => {
+    if (dataSource === "live") {
+      const result = await exportBackupApi(includeKeys);
+      if (!result) return;
+      downloadFile(
+        result.filename ?? `oi-sniper-backup-${new Date().toISOString().slice(0, 10)}.json`,
+        JSON.stringify(result.backup, null, 2),
+        "application/json",
+      );
+      return;
+    }
     const backup = {
       version: 1,
       exportedAt: new Date().toISOString(),
@@ -123,23 +147,31 @@ export default function SettingsPage() {
   };
 
   const importBackup = async (file: File) => {
+    let parsed: Record<string, unknown>;
     try {
-      const parsed = JSON.parse(await file.text());
-      if (parsed.themeMode && ["light", "dark", "system"].includes(parsed.themeMode)) {
-        setThemeMode(parsed.themeMode);
-      }
-      if (typeof parsed.reduceMotion === "boolean") setReduceMotion(parsed.reduceMotion);
-      if (parsed.guardrails) updateLiveGuardrails(parsed.guardrails);
-      setMode("paper");
-      notify(
-        "Backup imported",
-        "Appearance and live guardrails were restored. Live mode defaults to paper for safety.",
-        undefined,
-        "success",
-      );
+      parsed = JSON.parse(await file.text()) as Record<string, unknown>;
     } catch {
       notify("Could not import backup", "The file is not valid JSON.", undefined, "danger");
+      return;
     }
+    if (dataSource === "live") {
+      await importBackupApi(parsed);
+      return;
+    }
+    if (parsed.themeMode && ["light", "dark", "system"].includes(String(parsed.themeMode))) {
+      setThemeMode(parsed.themeMode as ThemeMode);
+    }
+    if (typeof parsed.reduceMotion === "boolean") setReduceMotion(parsed.reduceMotion);
+    if (parsed.guardrails && typeof parsed.guardrails === "object") {
+      updateLiveGuardrails(parsed.guardrails as Partial<typeof liveGuardrails>);
+    }
+    setMode("paper");
+    notify(
+      "Backup imported",
+      "Appearance and live guardrails were restored. Live mode defaults to paper for safety.",
+      undefined,
+      "success",
+    );
   };
 
   const importLegacy = async (file: File) => {
@@ -197,7 +229,7 @@ export default function SettingsPage() {
     <div className="space-y-4 sm:space-y-5">
       <PageHeader
         title="Settings"
-        subtitle="Appearance, exchange mode, data sources and backup for this local preview."
+        subtitle="Appearance, exchange mode, data sources and backup for the OI Sniper dashboard."
         actions={
           <Button
             variant="secondary"
@@ -418,9 +450,12 @@ export default function SettingsPage() {
                   <Button
                     variant="ghost"
                     size="sm"
-                    onClick={() => {
+                    onClick={async () => {
                       setApiKey("");
-                      notify("API key cleared", "The preview will keep using the browser feed.");
+                      const ok = await setCoinglassKey("");
+                      if (ok && dataSource !== "live") {
+                        notify("API key cleared", "The preview will keep using the browser feed.");
+                      }
                     }}
                   >
                     Clear key
@@ -431,8 +466,9 @@ export default function SettingsPage() {
               <div className="mt-4 flex items-start gap-2.5 rounded-[10px] border border-line bg-surface-2 px-3 py-2.5">
                 <ShieldCheck size={14} strokeWidth={1.8} className="mt-0.5 shrink-0 text-muted" aria-hidden="true" />
                 <p className="text-[10px] leading-[1.5] text-muted">
-                  This preview runs on local sample data. No key, order or account
-                  detail leaves the browser.
+                  {dataSource === "live"
+                    ? "The key is stored in the bot vault on this host. It is never sent back to the browser and is not committed to the repository."
+                    : "This preview runs on local sample data. No key, order or account detail leaves the browser."}
                 </p>
               </div>
             </div>
@@ -606,8 +642,8 @@ export default function SettingsPage() {
                 <DataRow label="Mode" value={mode === "live" ? "Live" : "Paper"} />
                 <DataRow label="Exchange" value={activeExchange?.name ?? "None"} />
                 <DataRow label="Kill switch" value={killSwitch ? "Active" : "Clear"} tone={killSwitch ? "neg" : "default"} />
-                <DataRow label="Data" value="Sample state" />
-                <DataRow label="Storage" value="Local only" />
+                <DataRow label="Data" value={dataSource === "live" ? "Bot API" : "Sample state"} />
+                <DataRow label="Storage" value={dataSource === "live" ? "Bot vault" : "Local only"} />
                 <DataRow label="Open positions" value={String(positions.length)} />
               </div>
             </div>
@@ -615,17 +651,24 @@ export default function SettingsPage() {
 
           <Card>
             <SectionHead
-              title="Sample data"
-              subtitle="Reset the preview back to its opening state."
+              title={dataSource === "live" ? "Account reset" : "Sample data"}
+              subtitle={
+                dataSource === "live"
+                  ? "Clear trades, positions and the equity curve on the bot."
+                  : "Reset the preview back to its opening state."
+              }
             />
             <div className="px-5 pb-5 pt-5 sm:px-6">
               <p className="text-[10.5px] leading-[1.55] text-muted">
-                Resetting restores the sample positions, trades and activity. It does
-                not touch the strategy settings.
+                {dataSource === "live"
+                  ? "Resetting clears the bot's paper account and equity curve. Strategy settings are kept."
+                  : "Resetting restores the sample positions, trades and activity. It does not touch the strategy settings."}
               </p>
               {confirmReset ? (
                 <div className="mt-4 rounded-[10px] border border-line bg-neg-soft p-3">
-                  <p className="text-[11px] font-medium text-ink">Reset the sample account?</p>
+                  <p className="text-[11px] font-medium text-ink">
+                    {dataSource === "live" ? "Reset the bot account?" : "Reset the sample account?"}
+                  </p>
                   <p className="mt-0.5 text-[10px] text-muted">
                     Open positions and trade history will be replaced.
                   </p>
@@ -657,7 +700,7 @@ export default function SettingsPage() {
                   onClick={() => setConfirmReset(true)}
                   icon={<RotateCcw size={12} strokeWidth={2} aria-hidden="true" />}
                 >
-                  Reset sample data
+                  {dataSource === "live" ? "Reset bot account" : "Reset sample data"}
                 </Button>
               )}
             </div>

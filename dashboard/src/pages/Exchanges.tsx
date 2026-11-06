@@ -212,7 +212,6 @@ export default function ExchangesPage() {
     activeExchange,
     mode,
     liveGuardrails,
-    updateLiveGuardrails,
     openLiveConfirm,
     setMode,
     reconcile,
@@ -220,6 +219,7 @@ export default function ExchangesPage() {
     requestConfirm,
     closeAll,
     openExchangeWizard,
+    saveLiveGuardrails,
   } = useApp();
   const [draft, setDraft] = useState(liveGuardrails);
 
@@ -236,8 +236,9 @@ export default function ExchangesPage() {
     (exchange) => exchange.connected && exchange.liveSupported,
   );
 
-  const saveGuardrails = () => {
-    updateLiveGuardrails(draft);
+  const saveGuardrails = async () => {
+    const ok = await saveLiveGuardrails(draft);
+    if (!ok) return;
     notify(
       "Live guardrails saved",
       `Max margin ${draft.marginPerTrade > 0 ? usd(draft.marginPerTrade, 0) : "strategy sizing"}, daily loss cap ${

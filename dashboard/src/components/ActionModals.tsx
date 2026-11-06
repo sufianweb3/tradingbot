@@ -364,9 +364,11 @@ export function ExchangeWizard() {
     closeExchangeWizard,
     exchanges,
     connectExchange,
+    testExchange,
     activeExchange,
     reduceMotion,
     notify,
+    dataSource,
   } = useApp();
   const venue = exchanges.find((item) => item.id === exchangeWizardVenue);
   const [apiKey, setApiKey] = useState("");
@@ -375,6 +377,7 @@ export function ExchangeWizard() {
   const [testnet, setTestnet] = useState(true);
   const [testing, setTesting] = useState(false);
   const [tested, setTested] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [testedBalance, setTestedBalance] = useState(0);
 
   useEffect(() => {
@@ -385,6 +388,7 @@ export function ExchangeWizard() {
     setTestnet(true);
     setTesting(false);
     setTested(false);
+    setSaving(false);
     setTestedBalance(0);
   }, [exchangeWizardVenue]);
 
@@ -394,32 +398,46 @@ export function ExchangeWizard() {
     secret.trim().length > 6 &&
     (!requiresPassphrase || passphrase.trim().length > 2);
 
-  const runTest = () => {
-    if (!canSubmit) {
+  const runTest = async () => {
+    if (!venue || !canSubmit) {
       notify("Missing credentials", "Enter the API key, secret and passphrase first.", undefined, "danger");
       return;
     }
     setTesting(true);
     setTested(false);
-    window.setTimeout(() => {
-      setTesting(false);
-      setTested(true);
-      setTestedBalance(Math.round((500 + Math.random() * 2_200) * 100) / 100);
-    }, 950);
+    const result = await testExchange({
+      venue: venue.id,
+      apiKey: apiKey.trim(),
+      secret: secret.trim(),
+      passphrase: passphrase.trim() || undefined,
+    });
+    setTesting(false);
+    if (!result.ok) {
+      notify("Connection test failed", result.error, undefined, "danger");
+      return;
+    }
+    setTested(true);
+    setTestedBalance(result.balance ?? 0);
   };
 
-  const save = () => {
+  const save = async () => {
     if (!venue || !canSubmit) {
       notify("Missing credentials", "Enter the API key and secret first.", undefined, "danger");
       return;
     }
-    connectExchange({
+    setSaving(true);
+    const ok = await connectExchange({
       venue: venue.id,
       apiKey: apiKey.trim(),
       secret: secret.trim(),
       passphrase: passphrase.trim() || undefined,
       testnet,
     });
+    setSaving(false);
+    if (!ok) {
+      // The store already reported the failure. Keep the wizard open.
+      return;
+    }
   };
 
   return (
@@ -502,13 +520,26 @@ export function ExchangeWizard() {
                     />
                   </Field>
                 ) : null}
-                <div className="flex items-center justify-between gap-4 rounded-[10px] border border-line px-3 py-2.5">
-                  <div>
-                    <p className="text-[11px] font-medium text-ink">Use testnet</p>
-                    <p className="mt-0.5 text-[9.5px] text-muted">Recommended for the first connection.</p>
+                {dataSource === "live" ? (
+                  <div className="flex items-start gap-2.5 rounded-[10px] border border-line bg-surface-2 px-3 py-2.5">
+                    <ShieldCheck size={14} className="mt-0.5 shrink-0 text-pos" aria-hidden="true" />
+                    <div>
+                      <p className="text-[10.5px] font-medium text-ink">Validated by the bot</p>
+                      <p className="mt-0.5 text-[10px] leading-[1.5] text-muted">
+                        The key is tested against the venue and stored in the bot vault. Withdrawals
+                        must be disabled on the exchange before saving.
+                      </p>
+                    </div>
                   </div>
-                  <Switch checked={testnet} onChange={setTestnet} label="Use testnet" />
-                </div>
+                ) : (
+                  <div className="flex items-center justify-between gap-4 rounded-[10px] border border-line px-3 py-2.5">
+                    <div>
+                      <p className="text-[11px] font-medium text-ink">Use testnet</p>
+                      <p className="mt-0.5 text-[9.5px] text-muted">Recommended for the first connection.</p>
+                    </div>
+                    <Switch checked={testnet} onChange={setTestnet} label="Use testnet" />
+                  </div>
+                )}
               </div>
 
               {tested ? (
@@ -526,8 +557,9 @@ export function ExchangeWizard() {
 
               <p className="mt-4 flex items-start gap-2 text-[9.5px] leading-[1.5] text-faint">
                 <ShieldCheck size={12} className="mt-0.5 shrink-0" aria-hidden="true" />
-                Preview only. Keys stay in this browser session, are not committed and are never
-                sent to an exchange by this interface.
+                {dataSource === "live"
+                  ? "Credentials are sent only to the bot API on this origin. They are stored in its local vault, never committed to the repository and never exposed back to the browser."
+                  : "Sample mode. Keys stay in this browser session, are not committed and are never sent to an exchange."}
               </p>
             </div>
 
@@ -540,7 +572,7 @@ export function ExchangeWizard() {
                   variant="secondary"
                   size="sm"
                   onClick={runTest}
-                  disabled={!canSubmit || testing}
+                  disabled={!canSubmit || testing || saving}
                 >
                   {testing ? "Testing…" : "Test connection"}
                 </Button>
@@ -548,10 +580,10 @@ export function ExchangeWizard() {
                   variant="primary"
                   size="sm"
                   onClick={save}
-                  disabled={!canSubmit}
+                  disabled={!canSubmit || saving}
                   icon={<ShieldCheck size={13} strokeWidth={2} aria-hidden="true" />}
                 >
-                  Save &amp; connect
+                  {saving ? "Connecting…" : "Save & connect"}
                 </Button>
               </div>
             </div>

@@ -52,6 +52,12 @@ by default. Configure at least one OI/Volume row in the dashboard, press
 
 ## Dashboard
 
+The default dashboard is the vanilla app at `/`. A React dashboard is also built
+from `dashboard/` and served at **`/dashboard/`**; it uses the same JSON API, keeps
+paper mode as the default and shows whether it is connected to the bot or running
+on sample data. Build it with `npm run build` (or `npm run build:dashboard` to
+refresh only the React app).
+
 - **Strategy settings** (left panel) - capital, leverage, sizing, SL/TP, trailing,
   OI/volume filters with per-row on/off toggles, direction, universe limits, max
   trades, scan/refresh timing, fees, venues.
@@ -594,6 +600,7 @@ src/store.js           defaults, normalisation, JSON store
 src/report.js          HTML/CSV/JSON reports + SVG equity chart
 scripts/ai-export.mjs  streams the AI dataset into one JSONL file
 public/                dashboard (vanilla HTML/CSS/JS, no build step)
+dashboard/             React dashboard (Vite, served at /dashboard/)
 test/                  node:test suites
 data/state.json        local runtime state (created on first run, git-ignored)
 js/, home.html         local-only CoinGlass reference bundle (git-ignored)

@@ -4,7 +4,6 @@ import { ChevronDown, Download, FileJson, FileText, Table2 } from "lucide-react"
 import { useApp } from "../store/AppStore";
 import { downloadFile } from "../lib/download";
 import { buildHtmlReport, buildJsonReport, buildTradesCsv } from "../lib/report";
-import { START_FUND } from "../lib/data";
 import { Button } from "./ui";
 
 export function ReportMenu({ compact = false }: { compact?: boolean }) {
@@ -18,6 +17,7 @@ export function ReportMenu({ compact = false }: { compact?: boolean }) {
     mode,
     activeExchange,
     notify,
+    initialFund,
   } = useApp();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -40,7 +40,7 @@ export function ReportMenu({ compact = false }: { compact?: boolean }) {
 
   const payload = {
     equity,
-    startFund: START_FUND,
+    startFund: initialFund,
     stats,
     positions,
     trades,

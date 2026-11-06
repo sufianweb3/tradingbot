@@ -6,6 +6,7 @@ import {
   ChevronRight,
   CircleHelp,
   Crosshair,
+  Database,
   History,
   Layers3,
   LayoutDashboard,
@@ -563,6 +564,9 @@ function Topbar({
     setMobileNavOpen,
     updatedAt,
     mode,
+    dataSource,
+    apiError,
+    refresh,
   } = useApp();
   const location = useLocation();
   const title = pageTitles[location.pathname] ?? "Overview";
@@ -622,6 +626,37 @@ function Topbar({
           <span className="num hidden text-[10px] text-faint min-[1400px]:inline">
             {clockTime(now)}
           </span>
+
+          <button
+            type="button"
+            onClick={() => void refresh()}
+            title={
+              dataSource === "live"
+                ? "Connected to the bot API. Click to refresh now."
+                : apiError
+                  ? `Sample data: ${apiError}`
+                  : "Sample data. Start the bot server to load live state."
+            }
+            className="hidden items-center gap-1.5 rounded-full border border-line bg-surface px-2.5 py-1 text-[9.5px] font-medium text-muted transition-colors duration-150 hover:border-line-strong hover:text-ink sm:flex"
+          >
+            <Database size={10} strokeWidth={2} aria-hidden="true" />
+            <span
+              className={cn(
+                "status-dot",
+                dataSource === "live"
+                  ? "text-pos is-pulsing"
+                  : dataSource === "loading"
+                    ? "text-faint"
+                    : "text-warn",
+              )}
+              aria-hidden="true"
+            />
+            {dataSource === "live"
+              ? "Live API"
+              : dataSource === "loading"
+                ? "Connecting"
+                : "Sample data"}
+          </button>
 
           <span className="mx-1 hidden h-5 w-px bg-line sm:block" />
 

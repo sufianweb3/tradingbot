@@ -24,6 +24,14 @@ import { cn, price, usd } from "../lib/format";
 import { useApp, type LiveGuardrails } from "../store/AppStore";
 import { decodePresetLink } from "../lib/report";
 import {
+  buildSettingsPatch,
+  executionFromSettings,
+  globalFromSettings,
+  liveFromSettings,
+  profilesFromSettings,
+  venuesFromSettings,
+} from "../lib/api";
+import {
   Button,
   Card,
   DataRow,
@@ -422,7 +430,9 @@ export default function StrategyPage() {
     openLiveConfirm,
     killSwitch,
     setKillSwitch,
-    updateLiveGuardrails,
+    saveLiveGuardrails,
+    settings,
+    saveSettings,
   } = useApp();
 
   const [tab, setTab] = useState<StrategyTab>("profiles");
@@ -476,6 +486,37 @@ export default function StrategyPage() {
     execution: { ...defaultExecution },
     venues: { ...defaultVenues },
   });
+  const dirtyRef = useRef(false);
+
+  useEffect(() => {
+    dirtyRef.current = dirty;
+  }, [dirty]);
+
+  // Hydrate the editable drafts from the bot's saved settings. Never clobber
+  // edits the operator has already made on this screen.
+  useEffect(() => {
+    if (!settings || dirtyRef.current) return;
+    const profiles = profilesFromSettings(settings);
+    const global = globalFromSettings(settings);
+    const execution = executionFromSettings(settings);
+    const venues = venuesFromSettings(settings);
+    if (profiles) {
+      setDrafts({
+        long: cloneProfile(profiles.long),
+        short: cloneProfile(profiles.short),
+      });
+    }
+    setGlobalSettings(global);
+    setExecutionSettings(execution);
+    setVenuesOn(venues);
+    setLiveDraft(liveFromSettings(settings));
+    savedRef.current = {
+      drafts: cloneDrafts(profiles ?? drafts),
+      global: { ...global },
+      execution: { ...execution },
+      venues: { ...venues },
+    };
+  }, [settings]);
 
   const profile = drafts[side];
   const reference = coins.find((coin) => coin.symbol === "BTC") ?? coins[0];
@@ -565,8 +606,16 @@ export default function StrategyPage() {
     notify(`${preset.label} profile applied`, preset.note, undefined, "info");
   };
 
-  const save = () => {
-    updateLiveGuardrails(liveDraft);
+  const save = async () => {
+    const patch = buildSettingsPatch({
+      profiles: drafts,
+      global: globalSettings,
+      execution: executionSettings,
+      venues: venuesOn,
+      live: liveDraft,
+    });
+    const ok = await saveSettings(patch);
+    if (!ok) return;
     savedRef.current = {
       drafts: cloneDrafts(drafts),
       global: { ...globalSettings },
@@ -1588,8 +1637,9 @@ export default function StrategyPage() {
                     <Button
                       variant="secondary"
                       size="sm"
-                      onClick={() => {
-                        updateLiveGuardrails(liveDraft);
+                      onClick={async () => {
+                        const ok = await saveLiveGuardrails(liveDraft);
+                        if (!ok) return;
                         notify("Live guardrails saved", "The guardrails are active for the next live order.", undefined, "success");
                       }}
                     >

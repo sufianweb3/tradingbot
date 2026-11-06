@@ -1,5 +1,4 @@
 import { useMemo, useState } from "react";
-import { START_FUND } from "../lib/data";
 import {
   cn,
   dateTime,
@@ -47,6 +46,7 @@ export default function PerformancePage() {
     positions,
     deployedMargin,
     freeMargin,
+    initialFund,
   } = useApp();
   const [timeframe, setTimeframe] = useState<Timeframe>("1M");
   const chartData = series.slice(-timeframeCounts[timeframe]);
@@ -60,7 +60,7 @@ export default function PerformancePage() {
     () => tradeStats(trades.filter((trade) => trade.side === "short")),
     [trades],
   );
-  const totalReturn = ((equity - START_FUND) / START_FUND) * 100;
+  const totalReturn = initialFund > 0 ? ((equity - initialFund) / initialFund) * 100 : 0;
   const currentDrawdown = drawdowns[drawdowns.length - 1]?.value ?? 0;
   const maxDd = maxDrawdown(series);
   const avgHold = trades.length
@@ -94,8 +94,8 @@ export default function PerformancePage() {
         {[
           {
             label: "Net P&L",
-            value: signedUsd(equity - START_FUND),
-            tone: equity >= START_FUND ? "text-pos" : "text-neg",
+            value: signedUsd(equity - initialFund),
+            tone: equity >= initialFund ? "text-pos" : "text-neg",
           },
           { label: "Total return", value: pct(totalReturn), tone: totalReturn >= 0 ? "text-pos" : "text-neg" },
           { label: "Profit factor", value: stats.profitFactor.toFixed(2), tone: "text-ink" },
@@ -155,7 +155,7 @@ export default function PerformancePage() {
           <SectionHead title="Account summary" subtitle="Since the account opened" />
           <div className="px-5 pb-5 pt-5 sm:px-6">
             <div className="space-y-2.5">
-              <DataRow label="Starting fund" value={usd(START_FUND)} />
+              <DataRow label="Starting fund" value={usd(initialFund)} />
               <DataRow
                 label="Realised P&L"
                 value={signedUsd(realised)}
