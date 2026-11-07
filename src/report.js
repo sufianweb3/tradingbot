@@ -319,6 +319,15 @@ export function renderCsv(data) {
     "peakRoe",
     "exitReason",
     "durationSec",
+    "oi5m",
+    "oi15m",
+    "oi30m",
+    "oi1h",
+    "oi4h",
+    "vol1h",
+    "vol4h",
+    "priceChange5m",
+    "priceChange1h",
   ];
   const esc = (v) => {
     const s = String(v ?? "");
@@ -326,11 +335,22 @@ export function renderCsv(data) {
   };
   const lines = [cols.join(",")];
   for (const t of data.trades || []) {
+    const oi = t.signal?.oi || {};
+    const vol = t.signal?.vol || {};
     const row = {
       ...t,
       entryTime: iso(t.entryTime),
       exitTime: iso(t.exitTime),
       durationSec: Math.round(toNum(t.durationMs, 0) / 1000),
+      oi5m: oi["5m"],
+      oi15m: oi["15m"],
+      oi30m: oi["30m"],
+      oi1h: oi["1h"],
+      oi4h: oi["4h"],
+      vol1h: vol["1h"],
+      vol4h: vol["4h"],
+      priceChange5m: t.signal?.priceChange5m,
+      priceChange1h: t.signal?.priceChange1h,
     };
     lines.push(cols.map((c) => esc(row[c])).join(","));
   }

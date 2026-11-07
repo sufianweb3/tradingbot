@@ -168,6 +168,7 @@ function normaliseCoin(c) {
     volUsd24h: num(c.volUsd) ?? 0,
     oiChange24h: num(c.h24OiChangePercent),
     volChange24h: num(c.h24VolChangePercent),
+    priceChange5m: num(c.m5PriceChangePercent),
     priceChange1h: num(c.h1PriceChangePercent),
     priceChange24h: num(c.h24PriceChangePercent),
     funding: num(c.avgFundingRateBySymbol),

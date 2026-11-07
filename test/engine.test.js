@@ -45,10 +45,13 @@ function coin(symbol) {
     symbol,
     name: symbol,
     price: 100,
-    oi: { "5m": 10 },
-    vol: { "1h": 10 },
+    oi: { "5m": 10, "15m": 12, "30m": 14, "1h": 16, "4h": 18 },
+    vol: { "1h": 10, "4h": 20 },
     oiUsd: 1e9,
     volUsd24h: 1e9,
+    priceChange5m: 1.25,
+    priceChange1h: -0.5,
+    priceChange24h: 2,
   };
 }
 
@@ -80,6 +83,31 @@ test("50%-of-fund sizing fills two positions despite entry fees", () => {
     const c = open(engine, "SOL");
     assert.equal(c, null);
     assert.equal(engine.state.positions.length, 2);
+  } finally {
+    engine.destroy();
+  }
+});
+
+test("trade keeps the entry signal snapshot used by trade history", async () => {
+  const engine = makeEngine();
+  try {
+    const pos = open(engine, "BTC", 100);
+    assert.ok(pos);
+    assert.deepEqual(pos.signal.oi, { "5m": 10, "15m": 12, "30m": 14, "1h": 16, "4h": 18 });
+    assert.deepEqual(pos.signal.vol, { "1h": 10, "4h": 20 });
+    assert.equal(pos.signal.priceChange5m, 1.25);
+    assert.equal(pos.signal.priceChange1h, -0.5);
+
+    engine.hub.quote = async () => ({
+      price: 99.5,
+      ts: Date.now(),
+      venue: "stub",
+      venueName: "Stub",
+      base: "BTC",
+    });
+    await engine._tickPrices();
+    const trade = engine.state.trades[0];
+    assert.deepEqual(trade.signal, pos.signal);
   } finally {
     engine.destroy();
   }

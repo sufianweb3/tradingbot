@@ -5,6 +5,16 @@ All notable changes to this project are documented here.
 Releases are tagged `V1`, `V2`, ... on `main`, and `package.json` uses the matching
 SemVer major (`V1` = `1.x.x`). Runtime data is never committed.
 
+## [Unreleased]
+
+### Added
+
+- Trade history now shows the entry snapshot for every closed trade: OI change
+  (5m/15m/30m/1h/4h), volume change (1h/4h) and price change (5m/1h).
+- The CSV export includes the same nine entry-signal columns.
+- CoinGlass market rows now carry the 5m price change (server, API and browser
+  device feed), and positions store it in their `signal` snapshot.
+
 ## [V3] - 2026-11-07
 
 ### Added

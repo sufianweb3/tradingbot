@@ -95,6 +95,12 @@ const pct = (n, d = 2) => {
   const x = num(n);
   return (x > 0 ? "+" : "") + x.toFixed(d) + "%";
 };
+/** Like pct(), but keeps a missing snapshot value visible as "—". */
+const signalPct = (v, d = 2) => {
+  if (v === null || v === undefined || v === "") return "—";
+  const x = typeof v === "number" ? v : parseFloat(v);
+  return Number.isFinite(x) ? pct(x, d) : "—";
+};
 const compact = (n) => {
   const x = num(n);
   const a = Math.abs(x);
@@ -145,6 +151,36 @@ const duration = (ms) => {
   return Math.floor(m / 60) + "h " + (m % 60) + "m";
 };
 const cls = (v) => (num(v) > 0 ? "pos" : num(v) < 0 ? "neg" : "");
+/**
+ * The nine signal snapshot cells shown at the end of every trade-history row.
+ * Values are captured when the position opens; old trades may only have OI and
+ * volume, so missing snapshots render as an em dash rather than +0.00%.
+ */
+const signalCells = (signal) => {
+  const oi = signal?.oi || {};
+  const vol = signal?.vol || {};
+  const values = [
+    oi["5m"],
+    oi["15m"],
+    oi["30m"],
+    oi["1h"],
+    oi["4h"],
+    vol["1h"],
+    vol["4h"],
+    signal?.priceChange5m,
+    signal?.priceChange1h,
+  ];
+  return values
+    .map((v, i) => {
+      const missing =
+        v === null || v === undefined || v === "" || !Number.isFinite(Number(v));
+      const edge = i === 0 ? " sig-first" : "";
+      return `<td class="num mono sig-col${edge} ${missing ? "subtle" : cls(v)}">${
+        missing ? "—" : signalPct(v)
+      }</td>`;
+    })
+    .join("");
+};
 const ago = (ms) => {
   if (ms === null || ms === undefined || !Number.isFinite(Number(ms))) return "—";
   const s = Math.max(0, Math.round(Number(ms) / 1000));
@@ -1104,7 +1140,7 @@ function renderTrades() {
   $("#btnLoadMore").classList.toggle("hidden", state.trades.length >= (state.tradesTotal || 0));
 
   if (!list.length) {
-    tbody.innerHTML = `<tr><td colspan="12" class="empty-row"><b>No closed trades yet</b>A trade appears here after it hits SL, TP or you close it manually.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="21" class="empty-row"><b>No closed trades yet</b>A trade appears here after it hits SL, TP or you close it manually.</td></tr>`;
     $("#tradesFoot").textContent = "—";
     return;
   }
@@ -1126,6 +1162,7 @@ function renderTrades() {
         <td><span class="venue-tag" title="${parts} partial exit(s)">${esc(t.exitReason || "—")}${parts > 1 ? ` · ${parts}` : ""}</span></td>
         <td class="num subtle">${duration(t.durationMs)}</td>
         <td class="subtle">${esc(t.venueName || t.venue || "—")}</td>
+        ${signalCells(t.signal)}
       </tr>`;
     })
     .join("");
