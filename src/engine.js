@@ -3,12 +3,10 @@
  * manages simulated positions using real exchange prices.
  */
 
-import { fetchCoinMarkets, fetchCoinMarketsViaApi } from "./coinglass.js";
 import { ExchangeHub, VENUES } from "./exchanges.js";
+import { MARKET_CACHE_MS, MarketFeed } from "./marketFeed.js";
 import { Store, createInitialState, normalizeSettings } from "./store.js";
 import {
-  OI_FIELD,
-  VOL_FIELD,
   computeLevels,
   computeStats,
   enabledFilterCount,
@@ -17,18 +15,9 @@ import {
   positionMetrics,
   scoreCandidate,
 } from "./trading.js";
-import { clamp, iso, now, round, shortTime, toNum, uid } from "./util.js";
+import { clamp, now, round, shortTime, toNum, uid } from "./util.js";
 
 const MAX_LOG_LINES = 300;
-// Minimum gap between two CoinGlass scrapes. The dashboard polls once a second
-// and this guard prevents two clients (or a scan tick) from doubling the load.
-const MARKET_CACHE_MS = 900;
-// A browser tab can push its own scrape (device feed). Rows that arrive this
-// recently are preferred over a server-side scrape. Background tabs throttle
-// timers to about once a minute, so the window must cover a throttled push.
-const DEVICE_FEED_TTL_MS = 90000;
-// After a failed scrape, back off instead of retrying on every poll.
-const FAILURE_BACKOFF_MS = 20000;
 const MAX_SCAN_COINS = 60;
 
 /** Console output stays ASCII on Windows terminals with legacy code pages. */
@@ -61,33 +50,25 @@ function applySlippage(price, side, kind, slipPercent) {
 }
 
 export class Engine {
-  constructor({ dataDir, store, timers } = {}) {
+  constructor({ dataDir, store, timers, hub, feed, id, name } = {}) {
     this.timers = timers || {
       setTimeout: (fn, ms) => setTimeout(fn, ms),
       clearTimeout: (id) => clearTimeout(id),
     };
     this.store = store || new Store(`${dataDir || "data"}/state.json`);
     this.state = this.store.load();
-    this.hub = new ExchangeHub({ venueKeys: this.state.settings.venues });
-    this.marketCache = { at: 0, coins: [], total: 0, error: null, fetchedInMs: 0, pages: 0 };
-    this.marketStatus = {
-      state: "idle", // idle | connecting | connected | disconnected
-      connected: false,
-      refreshing: false,
-      source: this.state.settings.coinglassApiKey ? "api" : "scrape",
-      lastAttemptAt: null,
-      lastSuccessAt: null,
-      lastError: null,
-      lastLatencyMs: null,
-      coins: 0,
-      pages: 0,
-      consecutiveFailures: 0,
-      totalSuccesses: 0,
-      totalFailures: 0,
-    };
-    this._marketPromise = null;
-    this._deviceFeedAt = 0;
-    this._nextRetryAt = 0;
+    this.id = String(id || "main");
+    this.name = String(name || "Main strategy");
+    this.hub = hub || new ExchangeHub({ venueKeys: this.state.settings.venues });
+    // A portfolio passes one shared feed to every strategy, so five strategies
+    // do not scrape CoinGlass five times. A standalone engine owns its feed.
+    this.feed =
+      feed ||
+      new MarketFeed({
+        hub: this.hub,
+        apiKey: () => this.state.settings.coinglassApiKey,
+        log: (level, message) => this.log(level, message),
+      });
     this.scanning = false;
     this.priceBusy = false;
     this._scanTimer = null;
@@ -100,38 +81,62 @@ export class Engine {
     this._destroyed = false;
   }
 
-  async init() {
+  /** Shared market data lives on the feed; these keep the old engine API. */
+  get marketCache() {
+    return this.feed.cache;
+  }
+
+  set marketCache(value) {
+    this.feed.cache = value;
+  }
+
+  get marketStatus() {
+    return this.feed.status;
+  }
+
+  /**
+   * @param {object} [options]
+   * @param {boolean} [options.primeMarket] fetch/prime the shared screener cache
+   * @param {boolean} [options.quietFeeds] do not repeat shared-feed log lines
+   */
+  async init({ primeMarket = true, quietFeeds = false } = {}) {
     this.marketStatus.state = "connecting";
-    this.log("info", "Engine starting — paper trading only.");
+    if (!quietFeeds) this.log("info", `Strategy "${this.name}" starting — paper trading only.`);
     this._sampleEquity(true);
     try {
-      await this.hub.discover(true);
-      const s = this.hub.summary();
-      this.log(
-        "info",
-        `Exchange feeds: ${s.okVenues}/${s.totalVenues} online, ${s.instruments} instruments.`
-      );
-      for (const v of s.venues) {
-        if (!v.ok) this.log("warn", `${v.name} unavailable: ${v.error}`);
+      await this.hub.discover();
+      if (!quietFeeds) {
+        const s = this.hub.summary();
+        this.log(
+          "info",
+          `Exchange feeds: ${s.okVenues}/${s.totalVenues} online, ${s.instruments} instruments.`
+        );
+        for (const v of s.venues) {
+          if (!v.ok) this.log("warn", `${v.name} unavailable: ${v.error}`);
+        }
       }
     } catch (err) {
-      this.log("error", `Exchange discovery failed: ${err.message}`);
+      if (!quietFeeds) this.log("error", `Exchange discovery failed: ${err.message}`);
     }
     // Preload the screener table so the dashboard is populated on first paint.
-    try {
-      const data = await this._marketData(true);
-      this.log(
-        "info",
-        `CoinGlass: ${data.coins.length} coins loaded in ${data.fetchedInMs} ms (${data.pages} pages).`
-      );
-    } catch {
-      /* _marketData already logged the failure */
+    if (primeMarket) {
+      try {
+        const data = await this._marketData();
+        if (!quietFeeds) {
+          this.log(
+            "info",
+            `CoinGlass: ${data.coins.length} coins loaded in ${data.fetchedInMs} ms (${data.pages} pages).`
+          );
+        }
+      } catch {
+        /* _marketData already logged the failure */
+      }
     }
     this._started = true;
     this._schedulePriceTick(true);
     if (this.state.settings.autoStart) {
       this.start("autostart");
-    } else {
+    } else if (!quietFeeds) {
       this.log("info", "Bot is paused. Configure filters, then press Start.");
     }
     this.save();
@@ -321,9 +326,7 @@ export class Engine {
     const keyChanged = previous.coinglassApiKey !== this.state.settings.coinglassApiKey;
     if (keyChanged) {
       const hasKey = Boolean(this.state.settings.coinglassApiKey);
-      this.marketStatus.source = hasKey ? "api" : "scrape";
-      this.marketStatus.state = "idle";
-      this.marketCache = { at: 0, coins: [], total: 0, error: null, fetchedInMs: 0, pages: 0 };
+      this.feed.invalidate(hasKey ? "api" : "scrape");
       this.log(
         "info",
         hasKey
@@ -333,7 +336,13 @@ export class Engine {
     }
 
     if (JSON.stringify(previous.venues) !== JSON.stringify(merged.venues)) {
-      this.hub.venueKeys = [...new Set(merged.venues.filter((v) => VENUES[v]))];
+      // The hub can be shared by several strategies: add the new venues but
+      // never remove the ones another account still uses.
+      if (typeof this.hub.ensureVenues === "function") {
+        this.hub.ensureVenues(merged.venues);
+      } else {
+        this.hub.venueKeys = [...new Set(merged.venues.filter((v) => VENUES[v]))];
+      }
       this.hub.discover(true).catch((err) => this.log("warn", `Venue refresh failed: ${err.message}`));
     }
 
@@ -346,217 +355,26 @@ export class Engine {
   /* Market data                                                        */
   /* ------------------------------------------------------------------ */
 
-  /**
-   * Accept a CoinGlass snapshot scraped by a dashboard tab (device feed).
-   *
-   * The browser uses the same encrypted endpoint as the Node scraper, so the
-   * rows are already normalised. This makes the cloud deployment usable with
-   * no API key while the tab is open: it is the lowest-latency path because it
-   * skips the Worker → scrape round trip.
-   */
+  /** Accept a CoinGlass snapshot scraped by a dashboard tab (device feed). */
   ingestDeviceFeed(input = {}) {
-    const raw = Array.isArray(input.coins) ? input.coins : [];
-    if (!raw.length) return { ok: false, error: "empty-feed" };
-    if (raw.length > 5000) return { ok: false, error: "feed-too-large" };
-    // `merge` is used by the fast lane: it ships only the top-100 rows, so the
-    // rest of the table must be preserved instead of being replaced.
-    const merge = Boolean(input.merge);
-
-    const coins = [];
-    const seen = new Set();
-    for (const c of raw) {
-      const symbol = String(c?.symbol || "").toUpperCase().trim();
-      if (!/^[A-Z0-9]{1,24}$/.test(symbol) || seen.has(symbol)) continue;
-      seen.add(symbol);
-      const oi = {};
-      for (const tf of Object.keys(OI_FIELD)) oi[tf] = toNum(c?.oi?.[tf]);
-      const vol = {};
-      for (const tf of Object.keys(VOL_FIELD)) vol[tf] = toNum(c?.vol?.[tf]);
-      coins.push({
-        symbol,
-        name: String(c?.name || symbol),
-        price: toNum(c?.price),
-        oi,
-        vol,
-        oiUsd: toNum(c?.oiUsd, 0) ?? 0,
-        volUsd24h: toNum(c?.volUsd24h, 0) ?? 0,
-        oiChange24h: toNum(c?.oiChange24h),
-        volChange24h: toNum(c?.volChange24h),
-        priceChange1h: toNum(c?.priceChange1h),
-        priceChange24h: toNum(c?.priceChange24h),
-        funding: toNum(c?.funding),
-        logo: typeof c?.logo === "string" ? c.logo : null,
-      });
-    }
-    if (!coins.length) return { ok: false, error: "no-valid-coins" };
-
-    let finalCoins = coins;
-    let finalTotal = toNum(input.total, coins.length) ?? coins.length;
-    if (merge && this.marketCache.coins.length) {
-      const bySymbol = new Map(this.marketCache.coins.map((c) => [c.symbol, c]));
-      for (const coin of coins) bySymbol.set(coin.symbol, coin);
-      finalCoins = [...bySymbol.values()];
-      finalTotal = Math.max(finalTotal, finalCoins.length);
-    }
-
-    const at = now();
-    this._deviceFeedAt = at;
-    this._nextRetryAt = 0;
-    this.marketCache = {
-      at,
-      coins: finalCoins,
-      total: finalTotal,
-      pages: toNum(input.pages, 1) ?? 1,
-      fetchedInMs: toNum(input.fetchedInMs, null),
-      error: null,
-      source: "device",
-      partial: Boolean(input.partial),
-    };
-    this.state.meta.marketFetchedAt = at;
-    this.state.meta.marketError = null;
-    Object.assign(this.marketStatus, {
-      state: "connected",
-      connected: true,
-      refreshing: false,
-      source: "device",
-      lastSuccessAt: at,
-      lastError: null,
-      coins: finalCoins.length,
-      pages: this.marketCache.pages,
-      consecutiveFailures: 0,
-      totalSuccesses: this.marketStatus.totalSuccesses + 1,
+    const result = this.feed.ingestDeviceFeed(input, {
+      log: (level, message) => this.log(level, message),
     });
-    if (!this._deviceFeedLogged) {
-      this._deviceFeedLogged = true;
-      this.log("info", `CoinGlass device feed connected — ${finalCoins.length} coins from this browser.`);
+    if (result.ok) {
+      this.state.meta.marketFetchedAt = this.marketCache.at;
+      this.state.meta.marketError = null;
     }
-    // Deliberately no save(): a feed push happens every couple of seconds and
-    // the rows are not persisted, so writing the whole snapshot here would
-    // burn Durable Object write quota for nothing.
-    return { ok: true, coins: finalCoins.length, source: "device" };
-  }
-
-  _deviceFeedFresh() {
-    return this._deviceFeedAt > 0 && now() - this._deviceFeedAt < DEVICE_FEED_TTL_MS;
+    return result;
   }
 
   async _marketData(force = false) {
-    // A live browser feed wins over anything the server can fetch itself.
-    if (this._deviceFeedFresh() && this.marketCache.coins.length) {
-      this.marketStatus.state = "connected";
-      this.marketStatus.connected = true;
-      this.marketStatus.source = "device";
-      return this.marketCache;
-    }
-    if (now() < this._nextRetryAt) {
-      if (this.marketCache.coins.length) return this.marketCache;
-      throw new Error(this.marketStatus.lastError || "CoinGlass unavailable");
-    }
-    const age = now() - this.marketCache.at;
-    if (!force && this.marketCache.coins.length && age < MARKET_CACHE_MS) return this.marketCache;
-    if (this._marketPromise) return this._marketPromise;
-
-    this._marketPromise = (async () => {
-      const attemptStarted = now();
-      const apiKey = String(this.state.settings.coinglassApiKey || "").trim();
-      const source = apiKey ? "api" : "scrape";
-      this.marketStatus.source = source;
-      this.marketStatus.lastAttemptAt = attemptStarted;
-      this.marketStatus.refreshing = true;
-      if (!this.marketStatus.connected) this.marketStatus.state = "connecting";
-      try {
-        await this.hub.discover().catch(() => null);
-        const onPartial =
-          source === "scrape"
-            ? (partial, total) => {
-                // Paint the top-100 immediately; the full table follows.
-                if (!this.marketCache.coins.length || this.marketCache.partial) {
-                  this.marketCache = {
-                    ...this.marketCache,
-                    coins: partial,
-                    total,
-                    at: now(),
-                    partial: true,
-                    error: null,
-                    source,
-                  };
-                }
-              }
-            : undefined;
-        const data = apiKey
-          ? await fetchCoinMarketsViaApi(apiKey)
-          : await fetchCoinMarkets({ onPartial });
-        const wasDown =
-          !this.marketStatus.connected ||
-          this.marketStatus.consecutiveFailures > 0 ||
-          this.marketStatus.state === "disconnected";
-        this.marketCache = { ...data, at: data.fetchedAt || now(), error: null };
-        this.state.meta.marketFetchedAt = data.fetchedAt;
-        this.state.meta.marketError = null;
-        Object.assign(this.marketStatus, {
-          state: "connected",
-          connected: true,
-          refreshing: false,
-          source: data.source || source,
-          lastSuccessAt: data.fetchedAt || now(),
-          lastError: null,
-          lastLatencyMs: toNum(data.fetchedInMs, now() - attemptStarted),
-          coins: data.coins.length,
-          pages: data.pages,
-          consecutiveFailures: 0,
-          totalSuccesses: this.marketStatus.totalSuccesses + 1,
-        });
-        if (wasDown) {
-          const how = data.source === "api" ? "via official API" : "scraped";
-          this.log("info", `CoinGlass connected — ${data.coins.length} coins ${how}.`);
-        }
-        return this.marketCache;
-      } catch (err) {
-        const message = String(err?.message || err || "CoinGlass unavailable");
-        const firstFailure = this.marketStatus.consecutiveFailures === 0;
-        this.marketCache.error = message;
-        this.state.meta.marketError = message;
-        this._nextRetryAt = now() + FAILURE_BACKOFF_MS;
-        Object.assign(this.marketStatus, {
-          state: "disconnected",
-          connected: false,
-          refreshing: false,
-          source,
-          lastError: message,
-          lastLatencyMs: now() - attemptStarted,
-          consecutiveFailures: this.marketStatus.consecutiveFailures + 1,
-          totalFailures: this.marketStatus.totalFailures + 1,
-        });
-        // Log on the transition only; a 1s poll would otherwise flood the log.
-        if (firstFailure) {
-          this.log(
-            "error",
-            `CoinGlass ${source === "api" ? "API" : "scrape"} failed: ${message}`
-          );
-        }
-        if (this.marketCache.coins.length && now() - this.marketCache.at < 5 * 60 * 1000) {
-          return this.marketCache;
-        }
-        throw err;
-      } finally {
-        this._marketPromise = null;
-      }
-    })();
-    return this._marketPromise;
+    return this.feed.get(force, { log: (level, message) => this.log(level, message) });
   }
 
   getMarketStatus() {
-    const s = this.marketStatus;
-    return {
-      ...s,
-      source: s.source || (this.state.settings.coinglassApiKey ? "api" : "scrape"),
+    return this.feed.getStatus({
       apiKeySet: Boolean(String(this.state.settings.coinglassApiKey || "").trim()),
-      ageMs: s.lastSuccessAt ? now() - s.lastSuccessAt : null,
-      cacheAgeMs: this.marketCache.at ? now() - this.marketCache.at : null,
-      coins: this.marketCache.coins.length || s.coins,
-      pages: this.marketCache.pages || s.pages,
-      lastSuccessText: s.lastSuccessAt ? iso(s.lastSuccessAt) : null,
-    };
+    });
   }
 
   getMarketRows() {
@@ -578,7 +396,7 @@ export class Engine {
 
     for (const coin of this.marketCache.coins) {
       const ev = evaluateCoin(coin, s);
-      const entry = this.hub.resolve(coin.symbol);
+      const entry = this.hub.resolve(coin.symbol, s.venues);
       const explicitExcluded = excludedSet.has(coin.symbol);
       const tradable = Boolean(entry) || Boolean(s.allowCoinglassPrice && coin.price > 0);
       const row = {
@@ -947,9 +765,10 @@ export class Engine {
   }
 
   async _resolveQuote(coin) {
-    const entry = this.hub.resolve(coin.symbol);
+    const venues = this.state.settings.venues;
+    const entry = this.hub.resolve(coin.symbol, venues);
     if (entry) {
-      const q = await this.hub.quote(entry);
+      const q = await this.hub.quote(entry, { venueKeys: venues });
       if (q) return q;
     }
     if (this.state.settings.allowCoinglassPrice && coin.price > 0) {
@@ -1500,6 +1319,8 @@ export class Engine {
     const max = toNum(this.state.settings.maxTrades, 0) ?? 0;
     return {
       ...this.state.meta,
+      strategyId: this.id,
+      strategyName: this.name,
       running: Boolean(this.state.meta.running),
       scanning: this.scanning,
       serverTime: now(),
@@ -1520,6 +1341,7 @@ export class Engine {
   getLive() {
     return {
       serverTime: now(),
+      strategy: { id: this.id, name: this.name },
       meta: this.getMeta(),
       stats: this.getStats(),
       positions: this.getPositionsView(),
@@ -1533,6 +1355,7 @@ export class Engine {
     const stats = this.getStats();
     return {
       serverTime: now(),
+      strategy: { id: this.id, name: this.name },
       settings: this.publicSettings(),
       initialFund: this.state.initialFund,
       meta: this.getMeta(),
@@ -1550,6 +1373,7 @@ export class Engine {
   getReportData() {
     return {
       generatedAt: now(),
+      strategy: { id: this.id, name: this.name },
       settings: this.publicSettings(),
       initialFund: this.state.initialFund,
       meta: this.getMeta(),

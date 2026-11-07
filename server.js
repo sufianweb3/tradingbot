@@ -1,12 +1,16 @@
 /**
  * Zero-dependency local web server + JSON API.
+ *
+ * The server hosts a portfolio of independent paper strategies. Existing
+ * clients keep working: when no `strategy` is supplied the selected strategy is
+ * used, which is the account migrated from the old single-strategy state file.
  */
 
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { Engine } from "./src/engine.js";
+import { Portfolio } from "./src/portfolio.js";
 import { attachAiTradeLogger } from "./src/aiDataset.js";
 import { logExportFilename, streamBotLogExport } from "./src/logExport.js";
 import { renderCsv, renderJson, renderReport } from "./src/report.js";
@@ -78,6 +82,12 @@ function stamp() {
   return new Date().toISOString().replace(/[:.]/g, "-").replace("T", "_").slice(0, 19);
 }
 
+function strategyIdFrom(url, body = null) {
+  return String(
+    body?.strategy || body?.strategyId || url.searchParams.get("strategy") || ""
+  ).trim();
+}
+
 async function serveStatic(req, res, pathname) {
   let rel = pathname === "/" ? "index.html" : pathname.replace(/^\/+/, "");
   rel = decodeURIComponent(rel).replace(/\\/g, "/");
@@ -107,16 +117,39 @@ async function serveStatic(req, res, pathname) {
   }
 }
 
-const engine = new Engine({ dataDir: DATA_DIR });
-await engine.init();
+const portfolio = new Portfolio({ dataDir: DATA_DIR });
+await portfolio.init();
 
-// Passive AI dataset logger. It only listens to engine events and reads
-// state; removing this block leaves the bot and its trading logic identical.
-let aiLogger = { dispose() {} };
+// Passive AI dataset logger. One observer per strategy, each writing to its own
+// folder. Removing this block leaves the bot and its trading logic identical.
+const aiLoggers = new Map();
 try {
-  aiLogger = attachAiTradeLogger(engine);
+  const aiRoot = process.env.AI_DATASET_DIR
+    ? path.resolve(process.env.AI_DATASET_DIR)
+    : path.join(DATA_DIR, "ai-dataset");
+  for (const engine of portfolio.engines.values()) {
+    try {
+      aiLoggers.set(
+        engine.id,
+        attachAiTradeLogger(engine, { dir: path.join(aiRoot, engine.id) })
+      );
+    } catch (err) {
+      console.warn(`[ai-dataset] ${engine.id} disabled: ${err.message}`);
+    }
+  }
 } catch (err) {
   console.warn(`[ai-dataset] disabled: ${err.message}`);
+}
+
+function engineFor(url, body = null) {
+  return portfolio.resolve(strategyIdFrom(url, body)) || portfolio.selected();
+}
+
+function findEngineWithPosition(id) {
+  for (const engine of portfolio.engines.values()) {
+    if (engine.state.positions.some((p) => p.id === id)) return engine;
+  }
+  return null;
 }
 
 const server = http.createServer(async (req, res) => {
@@ -129,20 +162,23 @@ const server = http.createServer(async (req, res) => {
       if (method === "OPTIONS") {
         res.writeHead(204, {
           "access-control-allow-origin": "*",
-          "access-control-allow-methods": "GET,POST,OPTIONS",
+          "access-control-allow-methods": "GET,POST,PATCH,DELETE,OPTIONS",
           "access-control-allow-headers": "content-type",
         });
         return res.end();
       }
 
       if (method === "GET" && pathname === "/api/health") {
-        const cg = engine.getMarketStatus();
+        const cg = portfolio.getMarketStatus();
+        const strategies = portfolio.list();
         return sendJson(res, 200, {
           ok: true,
           serverTime: now(),
-          running: engine.state.meta.running,
-          positions: engine.state.positions.length,
-          trades: engine.state.trades.length,
+          running: strategies.some((s) => s.running),
+          runningStrategies: strategies.filter((s) => s.running).length,
+          strategies: strategies.length,
+          positions: strategies.reduce((a, s) => a + s.openTrades, 0),
+          trades: strategies.reduce((a, s) => a + s.totalTrades, 0),
           uptimeSec: Math.round(process.uptime()),
           coinglass: cg.state,
           coinglassConnected: cg.connected,
@@ -152,15 +188,87 @@ const server = http.createServer(async (req, res) => {
         });
       }
 
+      if (method === "GET" && pathname === "/api/strategies") {
+        return sendJson(res, 200, {
+          ok: true,
+          selectedId: portfolio.selectedId(),
+          strategies: portfolio.list(),
+          portfolio: portfolio.summary(),
+        });
+      }
+
+      if (method === "GET" && pathname === "/api/compare") {
+        return sendJson(res, 200, {
+          ok: true,
+          selectedId: portfolio.selectedId(),
+          strategies: portfolio.list(),
+          portfolio: portfolio.summary(),
+        });
+      }
+
+      if (method === "POST" && pathname === "/api/strategies") {
+        const body = await readBody(req);
+        const result = await portfolio.create({
+          name: body?.name,
+          fund: body?.fund,
+          settings: body?.settings && typeof body.settings === "object" ? body.settings : null,
+          cloneFrom: body?.cloneFrom || null,
+          start: body?.start === true,
+        });
+        return sendJson(res, result.ok ? 200 : 400, result);
+      }
+
+      if (method === "POST" && pathname === "/api/strategies/select") {
+        const body = await readBody(req);
+        const result = await portfolio.select(body?.id);
+        return sendJson(res, result.ok ? 200 : 404, result);
+      }
+
+      const strategyRoute = pathname.match(/^\/api\/strategies\/([^/]+)$/);
+      if (strategyRoute) {
+        const id = decodeURIComponent(strategyRoute[1]);
+        if (method === "GET") {
+          const engine = portfolio.resolve(id);
+          if (!engine) return sendJson(res, 404, { ok: false, error: "strategy-not-found" });
+          return sendJson(res, 200, {
+            ok: true,
+            strategy: portfolio.list().find((s) => s.id === id),
+            settings: engine.publicSettings(),
+            stats: engine.getStats(),
+          });
+        }
+        if (method === "DELETE") {
+          const result = await portfolio.remove(id);
+          return sendJson(res, result.ok ? 200 : 400, result);
+        }
+        if (method === "POST" || method === "PATCH") {
+          const body = await readBody(req);
+          const result = await portfolio.update(id, {
+            name: body?.name,
+            fund: body?.fund,
+            settings: body?.settings && typeof body.settings === "object" ? body.settings : body,
+            start: body?.start === true,
+            pause: body?.pause === true,
+          });
+          return sendJson(res, result.ok ? 200 : 404, result);
+        }
+      }
+
       if (method === "GET" && pathname === "/api/bootstrap") {
-        return sendJson(res, 200, { ok: true, ...engine.getBootstrap() });
+        const payload = portfolio.getBootstrap(strategyIdFrom(url));
+        if (payload.error) return sendJson(res, 404, { ok: false, ...payload });
+        return sendJson(res, 200, { ok: true, ...payload });
       }
 
       if (method === "GET" && pathname === "/api/live") {
+        const engine = engineFor(url);
+        if (!engine) return sendJson(res, 404, { ok: false, error: "strategy-not-found" });
         return sendJson(res, 200, { ok: true, ...engine.getLive() });
       }
 
       if (method === "GET" && pathname === "/api/dashboard") {
+        const engine = engineFor(url);
+        if (!engine) return sendJson(res, 404, { ok: false, error: "strategy-not-found" });
         if (!engine.marketCache.coins.length) {
           try {
             await engine.refreshMarketsIfStale();
@@ -170,17 +278,13 @@ const server = http.createServer(async (req, res) => {
         } else if (engine.marketCache.error || now() - engine.marketCache.at > 900) {
           engine.refreshMarketsIfStale().catch(() => null);
         }
-        return sendJson(res, 200, {
-          ok: true,
-          serverTime: now(),
-          ...engine.getLive(),
-          markets: engine.getMarketRows(),
-          meta: engine.getMeta(),
-          venues: engine.hub.summary(),
-        });
+        const payload = portfolio.getDashboard(engine.id);
+        return sendJson(res, 200, { ok: true, ...payload });
       }
 
       if (method === "GET" && pathname === "/api/markets") {
+        const engine = engineFor(url);
+        if (!engine) return sendJson(res, 404, { ok: false, error: "strategy-not-found" });
         // Serve the cached table immediately, refresh in the background.
         if (!engine.marketCache.coins.length) {
           try {
@@ -196,27 +300,36 @@ const server = http.createServer(async (req, res) => {
           serverTime: now(),
           markets: engine.getMarketRows(),
           meta: engine.getMeta(),
-          venues: engine.hub.summary(),
+          venues: portfolio.hub.summary(),
+          selectedId: engine.id,
+          strategies: portfolio.list(),
+          portfolio: portfolio.summary(),
         });
       }
 
       if (method === "GET" && pathname === "/api/config") {
+        const engine = engineFor(url);
+        const config = portfolio.getStrategyConfig(engine?.id);
+        if (!config) return sendJson(res, 404, { ok: false, error: "strategy-not-found" });
         return sendJson(res, 200, {
           ok: true,
-          settings: engine.publicSettings(),
-          initialFund: engine.state.initialFund,
-          stats: engine.getStats(),
+          strategy: { id: engine.id, name: engine.name },
+          ...config,
+          strategies: portfolio.list(),
+          portfolio: portfolio.summary(),
         });
       }
 
       if (method === "GET" && pathname === "/api/trades") {
         const limit = toNum(url.searchParams.get("limit"), 200);
         const offset = toNum(url.searchParams.get("offset"), 0);
-        const data = engine.getTrades({ limit, offset });
+        const data = portfolio.getTrades(strategyIdFrom(url), { limit, offset });
         return sendJson(res, 200, { ok: true, ...data });
       }
 
       if (method === "GET" && pathname === "/api/logs") {
+        const engine = engineFor(url);
+        const logger = engine ? aiLoggers.get(engine.id) : null;
         const includeDataset = url.searchParams.get("dataset") !== "0";
         const download = url.searchParams.get("download") !== "0";
         const disp = download ? "attachment" : "inline";
@@ -228,7 +341,7 @@ const server = http.createServer(async (req, res) => {
         });
         try {
           const chunks = streamBotLogExport(engine, {
-            datasetDir: aiLogger?.dir || null,
+            datasetDir: logger?.dir || null,
             includeDataset,
           });
           for await (const chunk of chunks) {
@@ -247,7 +360,8 @@ const server = http.createServer(async (req, res) => {
       if (method === "GET" && pathname === "/api/report") {
         const format = (url.searchParams.get("format") || "html").toLowerCase();
         const download = url.searchParams.get("download") !== "0";
-        const data = engine.getReportData();
+        const data = portfolio.getReportData(strategyIdFrom(url));
+        if (!data) return sendJson(res, 404, { ok: false, error: "strategy-not-found" });
         const base = `oi-sniper-report-${stamp()}`;
         const disp = download ? "attachment" : "inline";
         if (format === "csv") {
@@ -271,13 +385,18 @@ const server = http.createServer(async (req, res) => {
         if (!patch || typeof patch !== "object") {
           return sendJson(res, 400, { ok: false, error: "invalid-settings" });
         }
-        const result = engine.updateSettings(patch);
-        return sendJson(res, 200, { ok: true, ...result, stats: engine.getStats() });
+        const clean = { ...patch };
+        delete clean.strategy;
+        delete clean.strategyId;
+        const engine = engineFor(url, body);
+        if (!engine) return sendJson(res, 404, { ok: false, error: "strategy-not-found" });
+        const result = await portfolio.updateSettings(engine.id, clean);
+        return sendJson(res, 200, { ok: true, ...result, strategies: portfolio.list() });
       }
 
       if (method === "POST" && pathname === "/api/device/market") {
         const body = await readBody(req);
-        const result = engine.ingestDeviceFeed(body || {});
+        const result = portfolio.ingestDeviceFeed(body || {});
         return sendJson(res, result.ok ? 200 : 400, result);
       }
 
@@ -287,41 +406,86 @@ const server = http.createServer(async (req, res) => {
         if (key !== null && typeof key !== "string") {
           return sendJson(res, 400, { ok: false, error: "invalid-api-key" });
         }
-        const result = engine.setCoinglassApiKey(key);
-        return sendJson(res, 200, { ok: true, ...result, stats: engine.getStats() });
+        const result = await portfolio.setCoinglassApiKey(key);
+        return sendJson(res, 200, {
+          ok: true,
+          ...result,
+          stats: portfolio.selected()?.getStats(),
+        });
       }
 
       if (method === "POST" && pathname === "/api/control") {
         const body = await readBody(req);
         const action = String(body?.action || "");
-        if (action === "start") return sendJson(res, 200, { ok: true, ...engine.start("ui") });
-        if (action === "pause") return sendJson(res, 200, { ok: true, ...engine.pause("ui") });
-        if (action === "toggle") return sendJson(res, 200, { ok: true, ...engine.toggle() });
+        const id = strategyIdFrom(url, body);
+        if (action === "start-all") {
+          const result = await portfolio.startAll();
+          return sendJson(res, 200, { ok: true, ...result, strategies: portfolio.list() });
+        }
+        if (action === "pause-all") {
+          const result = await portfolio.pauseAll();
+          return sendJson(res, 200, { ok: true, ...result, strategies: portfolio.list() });
+        }
+        if (action === "close-all-strategies") {
+          const result = await portfolio.closeAllStrategies();
+          return sendJson(res, 200, { ok: true, ...result, strategies: portfolio.list() });
+        }
+        const engine = portfolio.resolve(id) || portfolio.selected();
+        if (!engine) return sendJson(res, 404, { ok: false, error: "strategy-not-found" });
+        if (action === "start") {
+          return sendJson(res, 200, {
+            ok: true,
+            ...portfolio.start(engine.id),
+            strategies: portfolio.list(),
+          });
+        }
+        if (action === "pause") {
+          return sendJson(res, 200, {
+            ok: true,
+            ...portfolio.pause(engine.id),
+            strategies: portfolio.list(),
+          });
+        }
+        if (action === "toggle") {
+          return sendJson(res, 200, {
+            ok: true,
+            ...portfolio.toggle(engine.id),
+            strategies: portfolio.list(),
+          });
+        }
         if (action === "reset") {
-          const result = engine.reset();
-          return sendJson(res, 200, { ok: true, ...result });
+          const result = await portfolio.reset(engine.id);
+          return sendJson(res, 200, { ok: true, ...result, strategies: portfolio.list() });
         }
         if (action === "close-all") {
-          const result = await engine.closeAll("Manual close all");
-          return sendJson(res, 200, { ok: true, ...result });
+          const result = await portfolio.closeAll(engine.id);
+          return sendJson(res, 200, { ok: true, ...result, strategies: portfolio.list() });
         }
         return sendJson(res, 400, { ok: false, error: "unknown-action" });
       }
 
       if (method === "POST" && pathname === "/api/scan") {
+        const body = await readBody(req);
+        const engine = engineFor(url, body);
+        if (!engine) return sendJson(res, 404, { ok: false, error: "strategy-not-found" });
         const result = await engine.scan({ manual: true });
         return sendJson(res, 200, { ok: true, ...result });
       }
 
       if (method === "POST" && pathname === "/api/trade/open") {
         const body = await readBody(req);
+        const engine = engineFor(url, body);
+        if (!engine) return sendJson(res, 404, { ok: false, error: "strategy-not-found" });
         const result = await engine.openManual(body?.symbol, { force: body?.force !== false });
         return sendJson(res, result.ok ? 200 : 400, result);
       }
 
       if (method === "POST" && pathname === "/api/trade/close") {
         const body = await readBody(req);
-        const result = await engine.closePositionById(String(body?.id || ""), body?.reason || "Manual");
+        const id = String(body?.id || "");
+        const engine = findEngineWithPosition(id) || engineFor(url, body);
+        if (!engine) return sendJson(res, 404, { ok: false, error: "strategy-not-found" });
+        const result = await engine.closePositionById(id, body?.reason || "Manual");
         return sendJson(res, result.ok ? 200 : 400, result);
       }
 
@@ -341,20 +505,23 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, HOST, () => {
   console.log("");
-  console.log("  OI Sniper - paper trading bot");
+  console.log("  OI Sniper - multi-strategy paper trading bot");
   console.log(`  -> http://${HOST}:${PORT}`);
-  console.log(`  data: ${path.join(DATA_DIR, "state.json")}`);
+  console.log(`  data: ${path.join(DATA_DIR, "strategies")}`);
+  console.log(`  strategies: ${portfolio.list().length}`);
   console.log("");
 });
 
 function shutdown(signal) {
   console.log(`\n[server] ${signal} received, saving state...`);
-  try {
-    aiLogger.dispose();
-  } catch {
-    /* logger is passive; never block shutdown */
+  for (const logger of aiLoggers.values()) {
+    try {
+      logger.dispose();
+    } catch {
+      /* logger is passive; never block shutdown */
+    }
   }
-  engine.destroy();
+  portfolio.destroy();
   server.close(() => process.exit(0));
   setTimeout(() => process.exit(0), 1500).unref();
 }

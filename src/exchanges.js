@@ -240,6 +240,8 @@ export class ExchangeHub {
     this.best = new Map(); // alias -> entry (deepest venue)
     this.status = new Map();
     this.quotes = new Map();
+    // One in-flight request per instrument, shared by every strategy price loop.
+    this._inflight = new Map();
     this.lastDiscover = 0;
     this._discovering = null;
     this.quoteErrors = 0;
@@ -329,15 +331,39 @@ export class ExchangeHub {
     return this.maps;
   }
 
-  resolve(symbol) {
+  resolve(symbol, venueKeys = null) {
     const base = normalizeBase(symbol);
     if (!base) return null;
+    // A strategy may disable a venue without affecting the other accounts that
+    // share this hub, so resolve against that strategy's own venue list.
+    if (Array.isArray(venueKeys) && venueKeys.length) {
+      let allowed = null;
+      for (const key of venueKeys) {
+        const map = this.maps.get(key);
+        if (!map) continue;
+        const entry =
+          map.get(base) ||
+          (base === "BTC" ? map.get("XBT") : null) ||
+          (base === "XBT" ? map.get("BTC") : null);
+        if (entry && (!allowed || entry.volUsd > allowed.volUsd)) allowed = entry;
+      }
+      return allowed;
+    }
     let entry = this.best.get(base);
     if (!entry) {
       if (base === "BTC") entry = this.best.get("XBT");
       else if (base === "XBT") entry = this.best.get("BTC");
     }
     return entry || null;
+  }
+
+  /** Add venues to the shared discovery set without shrinking it. */
+  ensureVenues(keys = []) {
+    const next = [...new Set(keys.filter((k) => VENUES[k]))];
+    const added = next.filter((k) => !this.venueKeys.includes(k));
+    if (!added.length) return false;
+    this.venueKeys.push(...added);
+    return true;
   }
 
   resolveExact(symbol) {
@@ -349,7 +375,7 @@ export class ExchangeHub {
    * Quote a venue instrument.
    * @param {{venue:string, venueSymbol?:string, symbol?:string, base?:string}} entry
    */
-  async quote(entry, { maxAgeMs = 1500, allowFallback = true } = {}) {
+  async quote(entry, { maxAgeMs = 1500, allowFallback = true, venueKeys = null } = {}) {
     const venue = entry?.venue;
     const symbol = entry?.venueSymbol || entry?.symbol;
     if (!VENUES[venue] || !symbol) return null;
@@ -362,6 +388,18 @@ export class ExchangeHub {
       return cached;
     }
 
+    // Several strategies hold the same coin at the same time. Without this
+    // coalescing every strategy would fire its own exchange request each tick.
+    const inflight = this._inflight.get(cacheKey);
+    if (inflight) return inflight;
+
+    const promise = this._fetchQuote({ venue, symbol, base, cacheKey, cached, t, allowFallback, venueKeys })
+      .finally(() => this._inflight.delete(cacheKey));
+    this._inflight.set(cacheKey, promise);
+    return promise;
+  }
+
+  async _fetchQuote({ venue, symbol, base, cacheKey, cached, t, allowFallback, venueKeys = null }) {
     try {
       const price = await VENUES[venue].fetchOne(symbol);
       if (!(price > 0)) throw new Error("invalid price");
@@ -382,9 +420,11 @@ export class ExchangeHub {
     } catch (err) {
       this.quoteErrors++;
       if (allowFallback) {
+        const allowed = Array.isArray(venueKeys) && venueKeys.length ? new Set(venueKeys) : null;
         const candidates = [];
         for (const [key, map] of this.maps) {
           if (key === venue) continue;
+          if (allowed && !allowed.has(key)) continue;
           const alt = map.get(base) || (base === "BTC" ? map.get("XBT") : null) || (base === "XBT" ? map.get("BTC") : null);
           if (alt) candidates.push(alt);
         }

@@ -11,8 +11,9 @@ import { createInitialState, sanitizeLoadedState } from "../src/store.js";
 const FLUSH_DELAY_MS = 400;
 
 export class DurableStore {
-  constructor(storage, saved) {
+  constructor(storage, saved, key = "state") {
     this.storage = storage;
+    this.key = key;
     this.state = saved ? sanitizeLoadedState(saved) : null;
     this._timer = null;
     this._dirty = false;
@@ -52,7 +53,7 @@ export class DurableStore {
     const snapshot = this.state;
     this._chain = this._chain
       .catch(() => null)
-      .then(() => this.storage.put("state", snapshot));
+      .then(() => this.storage.put(this.key, snapshot));
     return this._chain;
   }
 }

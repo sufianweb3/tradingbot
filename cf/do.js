@@ -1,12 +1,14 @@
 /**
- * Durable Object that hosts the paper-trading engine.
+ * Durable Object that hosts the multi-strategy paper-trading portfolio.
  *
- * One instance ("main") owns the whole strategy: state lives in the object's
- * SQLite storage, and the engine's timers are backed by Durable Object alarms
- * so scanning/pricing continues while nobody has the dashboard open.
+ * One instance ("engine-<generation>") owns every strategy. Each strategy has
+ * its own state under a namespaced storage key, and the engine's timers are
+ * backed by Durable Object alarms so scanning/pricing continues while nobody
+ * has the dashboard open.
  */
 
-import { Engine } from "../src/engine.js";
+import { Portfolio } from "../src/portfolio.js";
+import { renderStateLogExport } from "../src/logExport.js";
 import { renderCsv, renderJson, renderReport } from "../src/report.js";
 import { now, toNum } from "../src/util.js";
 import { ENGINE_GENERATION } from "./build.js";
@@ -15,7 +17,7 @@ import { AlarmTimers } from "./timers.js";
 
 const CORS = {
   "access-control-allow-origin": "*",
-  "access-control-allow-methods": "GET,POST,OPTIONS",
+  "access-control-allow-methods": "GET,POST,PATCH,DELETE,OPTIONS",
   "access-control-allow-headers": "content-type",
 };
 
@@ -56,6 +58,12 @@ async function readBody(request) {
   }
 }
 
+function strategyIdFrom(url, body = null) {
+  return String(
+    body?.strategy || body?.strategyId || url.searchParams.get("strategy") || ""
+  ).trim();
+}
+
 export class EngineV3DO {
   constructor(ctx, env) {
     this.ctx = ctx;
@@ -65,25 +73,51 @@ export class EngineV3DO {
   }
 
   async boot() {
-    const saved = await this.ctx.storage.get("state");
-    const wasRunning = Boolean(saved?.meta?.running);
-
-    this.store = new DurableStore(this.ctx.storage, saved);
+    const storage = this.ctx.storage;
+    const savedConfig = await storage.get("portfolio");
     this.timers = new AlarmTimers(this.ctx);
-    this.engine = new Engine({ store: this.store, timers: this.timers });
+    const adapter = {
+      loadConfig: async () => savedConfig,
+      saveConfig: async (config) => storage.put("portfolio", config),
+      loadState: async (entry) =>
+        entry.storeKey
+          ? await storage.get(entry.storeKey)
+          : await storage.get(`state:${entry.id}`),
+      createStore: (entry, saved) =>
+        new DurableStore(storage, saved, entry.storeKey || `state:${entry.id}`),
+      deleteStore: async (entry) => storage.delete(entry.storeKey || `state:${entry.id}`),
+      legacyEntry: async () => {
+        const legacy = await storage.get("state");
+        if (!legacy) return null;
+        return {
+          id: "main",
+          name: "Main strategy",
+          createdAt: now(),
+          storeKey: "state",
+        };
+      },
+    };
+
+    this.portfolio = new Portfolio({
+      timers: this.timers,
+      adapter,
+      resume: true,
+    });
 
     try {
-      await this.engine.init();
+      await this.portfolio.init();
     } catch (err) {
-      console.error("[engine] init failed:", err && err.message);
+      console.error("[portfolio] init failed:", err && err.message);
     }
+    await this.portfolio.flush();
+  }
 
-    // A Durable Object can be evicted at any time; resume the run the user
-    // left behind instead of silently pausing after every restart.
-    if (wasRunning && !this.engine.state.meta.running) {
-      this.engine.start("resume");
+  async flushAll() {
+    try {
+      await this.portfolio?.flush();
+    } catch {
+      /* best effort */
     }
-    await this.store.flush();
   }
 
   async alarm() {
@@ -91,7 +125,7 @@ export class EngineV3DO {
     try {
       await this.timers.runDue();
     } finally {
-      await this.store.flush();
+      await this.flushAll();
     }
   }
 
@@ -100,6 +134,10 @@ export class EngineV3DO {
     const url = new URL(request.url);
     const { pathname } = url;
     const method = request.method || "GET";
+    const portfolio = this.portfolio;
+
+    const engineFor = (body = null) =>
+      portfolio.resolve(strategyIdFrom(url, body)) || portfolio.selected();
 
     try {
       if (method === "OPTIONS") {
@@ -107,14 +145,17 @@ export class EngineV3DO {
       }
 
       if (method === "GET" && pathname === "/api/health") {
-        const cg = this.engine.getMarketStatus();
+        const cg = portfolio.getMarketStatus();
+        const strategies = portfolio.list();
         return json(200, {
           ok: true,
           serverTime: now(),
           generation: ENGINE_GENERATION,
-          running: this.engine.state.meta.running,
-          positions: this.engine.state.positions.length,
-          trades: this.engine.state.trades.length,
+          running: strategies.some((s) => s.running),
+          runningStrategies: strategies.filter((s) => s.running).length,
+          strategies: strategies.length,
+          positions: strategies.reduce((a, s) => a + s.openTrades, 0),
+          trades: strategies.reduce((a, s) => a + s.totalTrades, 0),
           uptimeSec: Math.round((Date.now() - this.bootedAt) / 1000),
           coinglass: cg.state,
           coinglassConnected: cg.connected,
@@ -124,104 +165,153 @@ export class EngineV3DO {
         });
       }
 
-      if (method === "GET" && pathname === "/api/bootstrap") {
-        return json(200, { ok: true, ...this.engine.getBootstrap() });
-      }
-
-      if (method === "GET" && pathname === "/api/live") {
-        return json(200, { ok: true, ...this.engine.getLive() });
-      }
-
-      if (method === "GET" && pathname === "/api/dashboard") {
-        // One request for both the live state and the market table. Polling two
-        // endpoints separately doubles the Durable Object request bill, and the
-        // free plan allows 100k/day.
-        if (!this.engine.marketCache.coins.length) {
-          try {
-            await this.engine.refreshMarketsIfStale();
-          } catch {
-            /* serve the empty cache */
-          }
-        } else if (this.engine.marketCache.error || now() - this.engine.marketCache.at > 900) {
-          this.ctx.waitUntil(this.engine.refreshMarketsIfStale().catch(() => null));
-        }
-        const live = this.engine.getLive();
+      if (method === "GET" && (pathname === "/api/strategies" || pathname === "/api/compare")) {
         return json(200, {
           ok: true,
-          serverTime: now(),
-          ...live,
-          markets: this.engine.getMarketRows(),
-          meta: this.engine.getMeta(),
-          venues: this.engine.hub.summary(),
+          selectedId: portfolio.selectedId(),
+          strategies: portfolio.list(),
+          portfolio: portfolio.summary(),
         });
       }
 
-      if (method === "GET" && pathname === "/api/markets") {
-        // Serve the cached table immediately and refresh behind the response so
-        // a 1s poll never waits ~1s for seven CoinGlass requests. Only the very
-        // first request (empty cache) blocks.
-        if (!this.engine.marketCache.coins.length) {
+      if (method === "POST" && pathname === "/api/strategies") {
+        const body = await readBody(request);
+        const result = await portfolio.create({
+          name: body?.name,
+          fund: body?.fund,
+          settings: body?.settings && typeof body.settings === "object" ? body.settings : null,
+          cloneFrom: body?.cloneFrom || null,
+          start: body?.start === true,
+        });
+        await this.flushAll();
+        return json(result.ok ? 200 : 400, result);
+      }
+
+      if (method === "POST" && pathname === "/api/strategies/select") {
+        const body = await readBody(request);
+        const result = await portfolio.select(body?.id);
+        await this.flushAll();
+        return json(result.ok ? 200 : 404, result);
+      }
+
+      const strategyRoute = pathname.match(/^\/api\/strategies\/([^/]+)$/);
+      if (strategyRoute) {
+        const id = decodeURIComponent(strategyRoute[1]);
+        if (method === "GET") {
+          const engine = portfolio.resolve(id);
+          if (!engine) return json(404, { ok: false, error: "strategy-not-found" });
+          return json(200, {
+            ok: true,
+            strategy: portfolio.list().find((s) => s.id === id),
+            settings: engine.publicSettings(),
+            stats: engine.getStats(),
+          });
+        }
+        if (method === "DELETE") {
+          const result = await portfolio.remove(id);
+          await this.flushAll();
+          return json(result.ok ? 200 : 400, result);
+        }
+        if (method === "POST" || method === "PATCH") {
+          const body = await readBody(request);
+          const result = await portfolio.update(id, {
+            name: body?.name,
+            fund: body?.fund,
+            settings: body?.settings && typeof body.settings === "object" ? body.settings : body,
+            start: body?.start === true,
+            pause: body?.pause === true,
+          });
+          await this.flushAll();
+          return json(result.ok ? 200 : 404, result);
+        }
+      }
+
+      if (method === "GET" && pathname === "/api/bootstrap") {
+        const payload = portfolio.getBootstrap(strategyIdFrom(url));
+        if (payload.error) return json(404, { ok: false, ...payload });
+        return json(200, { ok: true, ...payload });
+      }
+
+      if (method === "GET" && pathname === "/api/live") {
+        const engine = engineFor();
+        if (!engine) return json(404, { ok: false, error: "strategy-not-found" });
+        return json(200, { ok: true, ...engine.getLive() });
+      }
+
+      if (method === "GET" && pathname === "/api/dashboard") {
+        const engine = engineFor();
+        if (!engine) return json(404, { ok: false, error: "strategy-not-found" });
+        // One request for both the live state and the market table. Polling two
+        // endpoints separately doubles the Durable Object request bill, and the
+        // free plan allows 100k/day.
+        if (!engine.marketCache.coins.length) {
           try {
-            await this.engine.refreshMarketsIfStale();
+            await engine.refreshMarketsIfStale();
+          } catch {
+            /* serve the empty cache */
+          }
+        } else if (engine.marketCache.error || now() - engine.marketCache.at > 900) {
+          this.ctx.waitUntil(engine.refreshMarketsIfStale().catch(() => null));
+        }
+        const payload = portfolio.getDashboard(engine.id);
+        return json(200, { ok: true, ...payload });
+      }
+
+      if (method === "GET" && pathname === "/api/markets") {
+        const engine = engineFor();
+        if (!engine) return json(404, { ok: false, error: "strategy-not-found" });
+        if (!engine.marketCache.coins.length) {
+          try {
+            await engine.refreshMarketsIfStale();
           } catch {
             /* fall through to the (empty) cache */
           }
-        } else if (this.engine.marketCache.error || now() - this.engine.marketCache.at > 900) {
-          this.ctx.waitUntil(
-            this.engine.refreshMarketsIfStale().catch(() => null)
-          );
+        } else if (engine.marketCache.error || now() - engine.marketCache.at > 900) {
+          this.ctx.waitUntil(engine.refreshMarketsIfStale().catch(() => null));
         }
         return json(200, {
           ok: true,
           serverTime: now(),
-          markets: this.engine.getMarketRows(),
-          meta: this.engine.getMeta(),
-          venues: this.engine.hub.summary(),
+          markets: engine.getMarketRows(),
+          meta: engine.getMeta(),
+          venues: portfolio.hub.summary(),
+          selectedId: engine.id,
+          strategies: portfolio.list(),
+          portfolio: portfolio.summary(),
         });
       }
 
       if (method === "GET" && pathname === "/api/config") {
+        const engine = engineFor();
+        const config = portfolio.getStrategyConfig(engine?.id);
+        if (!config) return json(404, { ok: false, error: "strategy-not-found" });
         return json(200, {
           ok: true,
-          settings: this.engine.publicSettings(),
-          initialFund: this.engine.state.initialFund,
-          stats: this.engine.getStats(),
+          strategy: { id: engine.id, name: engine.name },
+          ...config,
+          strategies: portfolio.list(),
+          portfolio: portfolio.summary(),
         });
       }
 
       if (method === "GET" && pathname === "/api/trades") {
         const limit = toNum(url.searchParams.get("limit"), 200);
         const offset = toNum(url.searchParams.get("offset"), 0);
-        return json(200, { ok: true, ...this.engine.getTrades({ limit, offset }) });
+        return json(200, {
+          ok: true,
+          ...portfolio.getTrades(strategyIdFrom(url), { limit, offset }),
+        });
       }
 
       if (method === "GET" && pathname === "/api/logs") {
-        // The Worker has no filesystem, so the AI trade dataset is only
-        // available from the local server. Still export the activity log.
+        const engine = engineFor();
         const at = now();
         const stampText = new Date(at)
           .toISOString()
           .replace(/[:.]/g, "-")
           .replace("T", "_")
           .slice(0, 19);
-        const records = [
-          {
-            record: "meta",
-            schema: "oi-bot-log-export/v1",
-            version: 1,
-            createdAt: new Date(at).toISOString(),
-            generatedAt: at,
-            app: "oi-sniper",
-            initialFund: this.engine.state.initialFund,
-            settings: this.engine.publicSettings(),
-            stats: this.engine.getStats(),
-            meta: this.engine.getMeta(),
-          },
-        ];
-        for (const entry of this.engine.state.logs || []) {
-          records.push({ record: "log", ...entry });
-        }
-        const body = records.map((r) => JSON.stringify(r)).join("\n") + "\n";
+        const body = renderStateLogExport(engine, { at });
         const disp = url.searchParams.get("download") !== "0" ? "attachment" : "inline";
         return text(200, body, "application/x-ndjson; charset=utf-8", {
           "content-disposition": `${disp}; filename="oi-bot-logs-${stampText}.jsonl"`,
@@ -231,7 +321,8 @@ export class EngineV3DO {
       if (method === "GET" && pathname === "/api/report") {
         const format = (url.searchParams.get("format") || "html").toLowerCase();
         const download = url.searchParams.get("download") !== "0";
-        const data = this.engine.getReportData();
+        const data = portfolio.getReportData(strategyIdFrom(url));
+        if (!data) return json(404, { ok: false, error: "strategy-not-found" });
         const base = `oi-sniper-report-${stamp()}`;
         const disp = download ? "attachment" : "inline";
         if (format === "csv") {
@@ -255,14 +346,23 @@ export class EngineV3DO {
         if (!patch || typeof patch !== "object") {
           return json(400, { ok: false, error: "invalid-settings" });
         }
-        const result = this.engine.updateSettings(patch);
-        await this.store.flush();
-        return json(200, { ok: true, ...result, stats: this.engine.getStats() });
+        const clean = { ...patch };
+        delete clean.strategy;
+        delete clean.strategyId;
+        const engine = engineFor(body);
+        if (!engine) return json(404, { ok: false, error: "strategy-not-found" });
+        const result = await portfolio.updateSettings(engine.id, clean);
+        await this.flushAll();
+        return json(200, {
+          ok: true,
+          ...result,
+          strategies: portfolio.list(),
+        });
       }
 
       if (method === "POST" && pathname === "/api/device/market") {
         const body = await readBody(request);
-        const result = this.engine.ingestDeviceFeed(body || {});
+        const result = portfolio.ingestDeviceFeed(body || {});
         // Deliberately no flush: the device feed is transient and a push every
         // few seconds must not consume storage writes.
         return json(result.ok ? 200 : 400, result);
@@ -274,45 +374,83 @@ export class EngineV3DO {
         if (key !== null && typeof key !== "string") {
           return json(400, { ok: false, error: "invalid-api-key" });
         }
-        const result = this.engine.setCoinglassApiKey(key);
-        await this.store.flush();
-        return json(200, { ok: true, ...result, stats: this.engine.getStats() });
+        const result = await portfolio.setCoinglassApiKey(key);
+        await this.flushAll();
+        return json(200, {
+          ok: true,
+          ...result,
+          stats: portfolio.selected()?.getStats(),
+        });
       }
 
       if (method === "POST" && pathname === "/api/control") {
         const body = await readBody(request);
         const action = String(body?.action || "");
+        const id = strategyIdFrom(url, body);
+        if (action === "start-all") {
+          const result = await portfolio.startAll();
+          await this.flushAll();
+          return json(200, { ok: true, ...result, strategies: portfolio.list() });
+        }
+        if (action === "pause-all") {
+          const result = await portfolio.pauseAll();
+          await this.flushAll();
+          return json(200, { ok: true, ...result, strategies: portfolio.list() });
+        }
+        if (action === "close-all-strategies") {
+          const result = await portfolio.closeAllStrategies();
+          await this.flushAll();
+          return json(200, { ok: true, ...result, strategies: portfolio.list() });
+        }
+        const engine = portfolio.resolve(id) || portfolio.selected();
+        if (!engine) return json(404, { ok: false, error: "strategy-not-found" });
         let result;
-        if (action === "start") result = this.engine.start("ui");
-        else if (action === "pause") result = this.engine.pause("ui");
-        else if (action === "toggle") result = this.engine.toggle();
-        else if (action === "reset") result = this.engine.reset();
-        else if (action === "close-all") result = await this.engine.closeAll("Manual close all");
+        if (action === "start") result = portfolio.start(engine.id);
+        else if (action === "pause") result = portfolio.pause(engine.id);
+        else if (action === "toggle") result = portfolio.toggle(engine.id);
+        else if (action === "reset") result = await portfolio.reset(engine.id);
+        else if (action === "close-all") result = await portfolio.closeAll(engine.id);
         else return json(400, { ok: false, error: "unknown-action" });
-        await this.store.flush();
-        return json(200, { ok: true, ...result });
+        await this.flushAll();
+        return json(200, {
+          ok: true,
+          ...result,
+          strategies: portfolio.list(),
+        });
       }
 
       if (method === "POST" && pathname === "/api/scan") {
-        const result = await this.engine.scan({ manual: true });
-        await this.store.flush();
+        const body = await readBody(request);
+        const engine = engineFor(body);
+        if (!engine) return json(404, { ok: false, error: "strategy-not-found" });
+        const result = await engine.scan({ manual: true });
+        await this.flushAll();
         return json(200, { ok: true, ...result });
       }
 
       if (method === "POST" && pathname === "/api/trade/open") {
         const body = await readBody(request);
-        const result = await this.engine.openManual(body?.symbol, { force: body?.force !== false });
-        await this.store.flush();
+        const engine = engineFor(body);
+        if (!engine) return json(404, { ok: false, error: "strategy-not-found" });
+        const result = await engine.openManual(body?.symbol, { force: body?.force !== false });
+        await this.flushAll();
         return json(result.ok ? 200 : 400, result);
       }
 
       if (method === "POST" && pathname === "/api/trade/close") {
         const body = await readBody(request);
-        const result = await this.engine.closePositionById(
-          String(body?.id || ""),
-          body?.reason || "Manual"
-        );
-        await this.store.flush();
+        const id = String(body?.id || "");
+        let engine = null;
+        for (const candidate of portfolio.engines.values()) {
+          if (candidate.state.positions.some((p) => p.id === id)) {
+            engine = candidate;
+            break;
+          }
+        }
+        if (!engine) engine = engineFor(body);
+        if (!engine) return json(404, { ok: false, error: "strategy-not-found" });
+        const result = await engine.closePositionById(id, body?.reason || "Manual");
+        await this.flushAll();
         return json(result.ok ? 200 : 400, result);
       }
 
@@ -322,7 +460,7 @@ export class EngineV3DO {
       console.error("[api]", err);
       return json(status, { ok: false, error: err.message || "server-error" });
     } finally {
-      this.ctx.waitUntil(this.store.flush().catch(() => null));
+      this.ctx.waitUntil(this.flushAll());
     }
   }
 }

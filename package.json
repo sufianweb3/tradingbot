@@ -1,9 +1,9 @@
 {
   "name": "oi-sniper-paper-bot",
-  "version": "2.0.0",
+  "version": "3.0.0",
   "private": true,
   "type": "module",
-  "description": "Coinglass OI/Volume screener + multi-exchange paper trading bot",
+  "description": "Coinglass OI/Volume screener + multi-strategy multi-exchange paper trading bot",
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",

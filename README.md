@@ -4,8 +4,13 @@ A local, browser-based **paper-trading** bot. It screens the full CoinGlass mark
 table for open-interest and volume percentage moves, prices every coin from public
 exchange feeds, and simulates leveraged trades with a configurable exit plan.
 
+Run **up to 20 strategies side by side** (5–7 is a comfortable target), each with
+its own fund, filters, sizing, exit plan, positions and trade history. All
+strategies share one exchange hub and one CoinGlass snapshot, so running several
+accounts does not multiply the network load.
+
 Nothing is ever sent to an exchange. All fills, fees, slippage, PnL and reports are
-simulated in a local JSON file.
+simulated in local JSON files.
 
 ```
 CoinGlass OI / volume %  ──►  filter + rank  ──►  open paper trade
@@ -46,15 +51,23 @@ by default. Configure at least one OI/Volume row in the dashboard, press
 | ---------- | -------------- | -------------------------------- |
 | `PORT`     | `3000`         | HTTP port                        |
 | `HOST`     | `127.0.0.1`    | Bind address (local only)        |
-| `DATA_DIR` | `./data`       | Where `state.json` is persisted  |
+| `DATA_DIR` | `./data`       | Runtime data (`strategies/`, AI dataset) |
 
 ---
 
 ## Dashboard
 
+- **Strategy bar** — chips for every paper account with live P/L, a portfolio
+  summary (equity, P/L, open trades, running count), and **+ New strategy**,
+  **Start all**, **Pause all** and **Compare** actions. Click a chip or table row
+  to open that account.
+- **Strategy comparison** — one row per account: state, fund, equity, P/L,
+  return, open/closed trades, win rate, max drawdown and leverage. Start/pause or
+  edit a strategy directly from the table.
 - **Strategy settings** (left panel) — capital, leverage, sizing, SL/TP, trailing,
   OI/volume filters with per-row on/off toggles, direction, universe limits, max
-  trades, scan/refresh timing, fees, venues.
+  trades, scan/refresh timing, fees, venues. Every field belongs to the selected
+  strategy only.
 - **KPI strip** — equity, total P/L, open P/L, win rate, profit factor, max
   drawdown, trade count, fees.
 - **CoinGlass connection** — a green **Connected** / red **Disconnected** pill in
@@ -79,6 +92,12 @@ by default. Configure at least one OI/Volume row in the dashboard, press
 Settings are only applied when you press **Save & apply**. Unsaved changes show an
 `unsaved` badge. Changing **Total fund** mid-run resets the paper account (the fund
 defines the run).
+
+**New strategy** creates an empty paper account. Choose a name, a fund and
+optionally a strategy to clone the settings from; cloning copies rules only, never
+trades or positions. **Edit** renames an account or changes its fund, and
+**Delete** removes its state file (the last remaining strategy cannot be deleted).
+The CoinGlass API key is shared by the whole portfolio.
 
 ---
 
@@ -380,26 +399,36 @@ off for 20 s instead of retrying on every poll.
 
 ## HTTP API
 
-All endpoints return JSON unless noted.
+All endpoints return JSON unless noted. Endpoints that act on one account accept
+an optional `strategy=<id>` query parameter (GET) or `strategy` field in the JSON
+body (POST); without it the selected strategy is used. The old single-strategy API
+is therefore unchanged.
 
 | Method | Path                | Purpose |
 | ------ | ------------------- | ------- |
-| GET    | `/api/health`       | Liveness, running flag, counts, CoinGlass connection state |
-| GET    | `/api/bootstrap`    | Settings, stats, markets, trades, curve, logs |
+| GET    | `/api/health`       | Liveness, portfolio counts, CoinGlass connection state |
+| GET    | `/api/strategies`   | `{ selectedId, strategies, portfolio }` |
+| POST   | `/api/strategies`   | Create: `{ name, fund, settings?, cloneFrom?, start? }` |
+| POST   | `/api/strategies/select` | Select the active account: `{ id }` |
+| GET    | `/api/strategies/:id` | One strategy summary, settings and stats |
+| POST   | `/api/strategies/:id` | Update name/fund (and optionally start/pause) |
+| DELETE | `/api/strategies/:id` | Delete an account and its state file |
+| GET    | `/api/compare`      | Same payload as `/api/strategies` |
+| GET    | `/api/bootstrap`    | Settings, stats, markets, trades, curve, logs, portfolio |
 | GET    | `/api/live`         | Stats, positions, curve, logs, venues, CoinGlass status |
-| GET    | `/api/dashboard`    | Live state + screener rows + meta in one request (used by the UI) |
+| GET    | `/api/dashboard`    | Live state + screener rows + meta + portfolio in one request |
 | GET    | `/api/markets`      | Screener rows + meta (auto-refreshes CoinGlass after 60s) |
 | GET    | `/api/config`       | Settings, initial fund, stats |
 | GET    | `/api/trades`       | Paginated closed trades (`limit`, `offset`) |
 | GET    | `/api/report`       | HTML / CSV / JSON report (`format`, `download`) |
 | GET    | `/api/logs`         | Download bot activity log + collected dataset as JSONL (`download`, `dataset=0`) |
-| POST   | `/api/settings`     | Save settings (`{ settings: {...} }` or a flat object) |
-| POST   | `/api/coinglass/key`| Set `{ apiKey }` or clear `{ clear: true }` the CoinGlass key |
+| POST   | `/api/settings`     | Save settings (`{ settings: {...}, strategy? }` or a flat object) |
+| POST   | `/api/coinglass/key`| Set `{ apiKey }` or clear `{ clear: true }` the shared CoinGlass key |
 | POST   | `/api/device/market`| Browser feed: `{ coins, merge, total, pages }` |
-| POST   | `/api/control`      | `start`, `pause`, `toggle`, `reset`, `close-all` |
+| POST   | `/api/control`      | `start`, `pause`, `toggle`, `reset`, `close-all`, `start-all`, `pause-all`, `close-all-strategies` |
 | POST   | `/api/scan`         | Manual scan (dry-run while paused) |
 | POST   | `/api/trade/open`   | `{ symbol, force }` manual paper entry |
-| POST   | `/api/trade/close`  | `{ id, reason }` manual close |
+| POST   | `/api/trade/close`  | `{ id, reason }` manual close (the account is found automatically) |
 
 ---
 
@@ -417,16 +446,22 @@ settings normalisation, report rendering, position sizing and engine close paths
 
 ## Persistence
 
-- State lives in `data/state.json` (or `$DATA_DIR/state.json`).
+- Portfolio config lives in `data/strategies/index.json`; each strategy has its own
+  snapshot at `data/strategies/<id>.json`.
+- The old single-account `data/state.json` is adopted automatically as the
+  `main` strategy on first boot of V3. It is kept in place, so no history is lost.
 - Writes are debounced (500 ms) and flushed atomically via a temp file.
-- A corrupt state file is renamed to `state.json.corrupt-<timestamp>` and a fresh
-  account is created.
-- The bot always loads **paused** after a restart locally. Open paper positions
-  are restored and managed, but no new trades open until you press Start. On
-  Cloudflare the Durable Object resumes a run that was active before eviction.
-- **Reset** keeps your settings and clears trades/PnL/history.
-- Changing **Total fund** resets the paper account because the fund defines the
-  run.
+- A corrupt strategy file is renamed to `<file>.corrupt-<timestamp>` and a fresh
+  account is created for that strategy only.
+- The bot always loads **paused** after a local restart. Open paper positions are
+  restored and managed, but no new trades open until you press Start. On
+  Cloudflare the Durable Object resumes strategies that were running before
+  eviction (`resume: true`).
+- **Reset** keeps the strategy's settings and clears its trades/PnL/history.
+- Changing **Total fund** resets that paper account because the fund defines the
+  run. Other strategies are unaffected.
+- Deleting a strategy removes its snapshot file and index entry; the last
+  remaining strategy cannot be deleted.
 
 ---
 
@@ -436,7 +471,8 @@ The local server attaches a read-only logger after the engine starts. It never
 changes filters, sizing, positions or execution; it only listens to the existing
 `trade` events and samples state once per second while a position is open.
 
-Each trade gets its own folder under `data/ai-dataset/`:
+Each trade gets its own folder under `data/ai-dataset/<strategy-id>/` (one
+observer per strategy, so accounts stay separate):
 
 ```
 data/ai-dataset/
@@ -510,18 +546,18 @@ Architecture:
 
 ```
 Browser ──► Worker (cf/index.js)
-              ├── /api/*  ──► EngineDO (one Durable Object, named "main")
-              │                 ├── engine state in DO SQLite storage
+              ├── /api/*  ──► EngineV3DO (one Durable Object, named "engine-g10")
+              │                 ├── portfolio config + per-strategy state in DO SQLite
               │                 └── scanning/pricing via DO alarms
               └── everything else ──► env.ASSETS (public/)
 ```
 
-- `cf/do.js` — Durable Object router, mirrors the local JSON API and resumes a
-  running bot after eviction.
-- `cf/store.js` — storage adapter so the engine persists to DO storage instead
-  of `data/state.json`.
-- `cf/timers.js` — maps the engine's `setTimeout`/`clearTimeout` onto the single
-  Durable Object alarm.
+- `cf/do.js` — Durable Object router, mirrors the local JSON API, hosts the
+  `Portfolio` and resumes running strategies after eviction.
+- `cf/store.js` — namespaced storage adapter so each strategy persists to its own
+  DO storage key instead of a JSON file.
+- `cf/timers.js` — maps every strategy's `setTimeout`/`clearTimeout` onto the
+  single Durable Object alarm.
 - `wrangler.jsonc` — Worker, assets binding, DO binding and SQLite migration.
 
 Commands:
@@ -576,8 +612,10 @@ cf/timers.js           alarm-backed setTimeout/clearTimeout
 wrangler.jsonc         Cloudflare bindings + migrations
 src/coinglass.js       encrypted CoinGlass fetch/decrypt + official API client
 src/exchanges.js       multi-venue discovery, symbol resolution, quotes
+src/marketFeed.js      shared CoinGlass cache, device feed and connection status
+src/portfolio.js       multi-strategy lifecycle, persistence and API payloads
 src/trading.js         pure filters, levels, PnL, stats, positionAction
-src/engine.js          scan loop, trade opening, position management, persistence
+src/engine.js          per-strategy scan loop, trades, positions, persistence
 src/aiDataset.js       passive AI trade dataset logger (observer only)
 src/logExport.js       streams activity log + dataset as one downloadable JSONL
 src/store.js           defaults, normalisation, JSON store
@@ -585,7 +623,8 @@ src/report.js          HTML/CSV/JSON reports + SVG equity chart
 scripts/ai-export.mjs  streams the AI dataset into one JSONL file
 public/                dashboard (vanilla HTML/CSS/JS, no build step)
 test/                  node:test suites
-data/state.json        local runtime state (created on first run, git-ignored)
+data/strategies/       portfolio index + one JSON snapshot per strategy (git-ignored)
+data/state.json        legacy single-account state, migrated as "main" (git-ignored)
 js/, home.html         local-only CoinGlass reference bundle (git-ignored)
 ```
 
@@ -593,8 +632,8 @@ js/, home.html         local-only CoinGlass reference bundle (git-ignored)
 
 ## Versioning
 
-- Releases are tagged `V1`, `V2`, ... on `main`.
-- `package.json` follows the same major (`V1` = `1.x.x`).
+- Releases are tagged `V1`, `V2`, `V3`, ... on `main`.
+- `package.json` follows the same major (`V1` = `1.x.x`, `V3` = `3.x.x`).
 - `CHANGELOG.md` records every release; add a new section before tagging.
 - Runtime state under `data/` and local secrets are never committed.
 
