@@ -59,6 +59,23 @@
     </div>
   </header>
 
+  <section class="strategy-bar" id="strategyBar">
+    <div class="strategy-bar-main">
+      <div class="strategy-bar-label">
+        <span>Strategies</span>
+        <b id="strategyCount">0</b>
+      </div>
+      <div id="strategyTabs" class="strategy-tabs" role="tablist" aria-label="Paper strategies"></div>
+    </div>
+    <div class="strategy-bar-actions">
+      <button id="btnNewStrategy" class="btn small" type="button">+ New strategy</button>
+      <button id="btnStartAll" class="btn small ghost" type="button">Start all</button>
+      <button id="btnPauseAll" class="btn small ghost" type="button">Pause all</button>
+      <button id="btnCompare" class="btn small ghost" type="button">Compare</button>
+    </div>
+    <div id="portfolioSummary" class="portfolio-summary"></div>
+  </section>
+
   <section class="kpis" id="kpis">
     <div class="kpi-group capital-group">
       <article class="kpi kpi-hero accent-green">
@@ -115,7 +132,7 @@
       <div class="panel-head sticky">
         <div>
           <h2>Strategy configuration</h2>
-          <p class="panel-sub">Profile rules, EQE gate &amp; routing</p>
+          <p class="panel-sub">Profile rules, EQE gate &amp; routing · <span id="settingsStrategyName">Main strategy</span> · <code id="storageNote">data/strategies/…</code></p>
         </div>
         <div style="display:flex; align-items:center; gap:8px;">
           <span id="dirtyBadge" class="dirty hidden">unsaved</span>
@@ -385,6 +402,43 @@
           </div>
         </div>
       </div>
+
+      <section class="panel compare-panel" id="comparePanel">
+        <div class="panel-head">
+          <div>
+            <h2>Strategy comparison</h2>
+            <p class="panel-sub" id="compareSub">One paper account per strategy · click a row to open it</p>
+          </div>
+          <div class="scanner-tools">
+            <button id="btnHideCompare" class="btn small ghost" type="button">Hide</button>
+          </div>
+        </div>
+        <div class="table-wrap compare-wrap">
+          <table class="data-table compare-table">
+            <thead>
+              <tr>
+                <th>Strategy</th>
+                <th>State</th>
+                <th class="num">Fund</th>
+                <th class="num">Equity</th>
+                <th class="num">P/L</th>
+                <th class="num">Return</th>
+                <th class="num">Open</th>
+                <th class="num">Trades</th>
+                <th class="num">Win rate</th>
+                <th class="num">Max DD</th>
+                <th class="num">Leverage</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="strategyBody"></tbody>
+          </table>
+        </div>
+        <div class="table-foot">
+          <span id="compareFoot">-</span>
+          <span id="compareTotals" class="mono">-</span>
+        </div>
+      </section>
 
       <section class="panel" id="panelCoinGlass">
         <div class="panel-head">
@@ -762,6 +816,44 @@
     </div>
   </div>
 </div>
+<dialog id="strategyDialog" class="strategy-dialog">
+  <form id="strategyForm" method="dialog">
+    <div class="dialog-head">
+      <div>
+        <h2 id="strategyDialogTitle">New strategy</h2>
+        <p class="panel-sub" id="strategyDialogSub">Each strategy is a separate paper account with its own fund and rules.</p>
+      </div>
+      <button id="btnStrategyClose" class="btn small ghost" type="button" aria-label="Close">✕</button>
+    </div>
+
+    <div class="dialog-body">
+      <label class="field full"><span>Strategy name</span>
+        <input id="strategyName" type="text" maxlength="60" placeholder="Momentum scalper" autocomplete="off">
+      </label>
+      <label class="field full"><span>Paper fund (USDT)</span>
+        <input id="strategyFund" type="number" min="1" step="1" placeholder="500">
+      </label>
+      <label class="field full" id="strategyCloneRow"><span>Clone settings from</span>
+        <select id="strategyClone">
+          <option value="">Blank - engine defaults</option>
+        </select>
+      </label>
+      <label class="switch-row" id="strategyStartRow">
+        <span class="switch"><input id="strategyStart" type="checkbox" checked><i></i></span>
+        <span>Start this strategy immediately</span>
+      </label>
+      <p class="note" id="strategyDialogNote"></p>
+    </div>
+
+    <div class="dialog-foot">
+      <button id="btnStrategyDelete" class="btn danger-ghost hidden" type="button">Delete strategy</button>
+      <div class="dialog-foot-right">
+        <button id="btnStrategyCancel" class="btn ghost" type="button">Cancel</button>
+        <button id="btnStrategySave" class="btn primary" type="submit">Create strategy</button>
+      </div>
+    </div>
+  </form>
+</dialog>
 
 <div id="toasts" class="toasts" aria-live="polite"></div>
 <script type="module" src="/app.js"></script>

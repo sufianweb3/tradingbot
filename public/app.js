@@ -36,6 +36,11 @@ const state = {
   equityCurve: [],
   logs: [],
   venues: { venues: [] },
+  strategies: [],
+  selectedId: null,
+  portfolio: null,
+  compareOpen: true,
+  dialog: { mode: "create", id: null },
   tab: "qualified",
   search: "",
   tradeSearch: "",
@@ -373,6 +378,26 @@ function setNotice(notice) {
 
 async function api(path, { method = "GET", body } = {}) {
   return localApi(path, { method, body });
+}
+
+/** Selected strategy id (the server falls back to its own selection when empty). */
+function strategyId() {
+  return String(state.selectedId || state.meta?.strategyId || "").trim();
+}
+
+/** Add the selected strategy to an API URL or report/download link. */
+function strategyPath(path) {
+  const id = strategyId();
+  if (!id) return path;
+  return path + (path.includes("?") ? "&" : "?") + `strategy=${encodeURIComponent(id)}`;
+}
+
+function strategyById(id) {
+  return (state.strategies || []).find((s) => s.id === id) || null;
+}
+
+function selectedStrategy() {
+  return strategyById(strategyId()) || (state.strategies || [])[0] || null;
 }
 
 function noteServerError(err) {
@@ -828,6 +853,114 @@ SETTINGS_ROOT.addEventListener("change", (e) => {
     markDirty();
   }
 });
+
+/* ------------------------------------------------------------------ */
+/* Strategies                                                         */
+/* ------------------------------------------------------------------ */
+function renderPortfolioSummary() {
+  const p = state.portfolio || {};
+  const count = num(p.count, (state.strategies || []).length);
+  const running = num(p.running, (state.strategies || []).filter((s) => s.running).length);
+  const el = $("#portfolioSummary");
+  if (!el) return;
+  el.innerHTML = `
+    <span class="pf-item">Portfolio equity <b class="mono">${money(p.equity)}</b></span>
+    <span class="pf-item">P/L <b class="mono ${cls(p.totalPnl)}">${signedMoney(p.totalPnl)}</b></span>
+    <span class="pf-item">Return <b class="mono ${cls(p.returnPct)}">${pct(p.returnPct)}</b></span>
+    <span class="pf-item">Open <b class="mono">${num(p.openTrades)}</b></span>
+    <span class="pf-item">Running <b class="mono">${running}/${count}</b></span>`;
+}
+
+function renderStrategies() {
+  const list = state.strategies || [];
+  const selected = strategyId();
+  const tabs = $("#strategyTabs");
+  if (tabs) {
+    tabs.innerHTML =
+      list
+        .map((s) => {
+          const running = Boolean(s.running);
+          const status = running ? "running" : s.stopReason === "max-trades" ? "stopped" : "paused";
+          return `<button class="strategy-chip ${s.id === selected ? "active" : ""} ${status}" type="button"
+            role="tab" aria-selected="${s.id === selected}" data-strategy="${esc(s.id)}"
+            title="${esc(s.name)} · ${money(s.equity)} equity · ${signedMoney(s.totalPnl)} P/L">
+            <span class="chip-dot"></span>
+            <span class="chip-name">${esc(s.name)}</span>
+            <span class="chip-pnl mono ${cls(s.totalPnl)}">${signedMoney(s.totalPnl)}</span>
+          </button>`;
+        })
+        .join("") || `<span class="subtle">No strategies loaded</span>`;
+  }
+  const countEl = $("#strategyCount");
+  if (countEl) countEl.textContent = String(list.length);
+  renderPortfolioSummary();
+  renderStrategyTable();
+  updateStrategyLabels();
+}
+
+function renderStrategyTable() {
+  const list = state.strategies || [];
+  const selected = strategyId();
+  const body = $("#strategyBody");
+  if (!body) return;
+  body.innerHTML =
+    list
+      .map((s) => {
+        const running = Boolean(s.running);
+        const stopped = !running && s.stopReason === "max-trades";
+        const statusClass = running ? "running" : stopped ? "stopped" : "paused";
+        const statusText = s.scanning ? "Scanning" : running ? "Running" : stopped ? "Max trades" : "Paused";
+        return `<tr data-strategy="${esc(s.id)}" class="${s.id === selected ? "selected" : ""}">
+          <td>
+            <div class="strategy-name-cell">
+              <b>${esc(s.name)}</b>
+              <small class="mono">${esc(s.id)}</small>
+            </div>
+          </td>
+          <td><span class="strategy-state ${statusClass}"><i></i>${statusText}</span></td>
+          <td class="num mono">${money(s.initialFund)}</td>
+          <td class="num mono">${money(s.equity)}</td>
+          <td class="num mono ${cls(s.totalPnl)}">${signedMoney(s.totalPnl)}</td>
+          <td class="num mono ${cls(s.returnPct)}">${pct(s.returnPct)}</td>
+          <td class="num mono">${num(s.openTrades)}</td>
+          <td class="num mono">${num(s.totalTrades)}</td>
+          <td class="num mono">${num(s.totalTrades) ? num(s.winrate).toFixed(1) + "%" : "-"}</td>
+          <td class="num mono">${num(s.maxDrawdownPct).toFixed(2)}%</td>
+          <td class="num mono">${num(s.leverage)}x</td>
+          <td class="strategy-row-actions">
+            <button class="btn small ${running ? "danger-ghost" : "ghost"}" type="button"
+              data-saction="toggle" data-id="${esc(s.id)}">${running ? "Pause" : "Start"}</button>
+            <button class="btn small ghost" type="button" data-saction="edit" data-id="${esc(s.id)}">Edit</button>
+          </td>
+        </tr>`;
+      })
+      .join("") ||
+    `<tr><td colspan="12" class="empty-row"><b>No strategies yet</b>Create one to start paper trading.</td></tr>`;
+
+  const p = state.portfolio || {};
+  const foot = $("#compareFoot");
+  if (foot) {
+    foot.textContent = `${num(p.count, list.length)} strategies · ${num(p.running)} running · ${num(p.openTrades)} open · ${num(p.totalTrades)} closed trades`;
+  }
+  const totals = $("#compareTotals");
+  if (totals) {
+    totals.textContent = `Equity ${money(p.equity)} · P/L ${signedMoney(p.totalPnl)} · ${pct(p.returnPct)}`;
+    totals.classList.toggle("pos", num(p.totalPnl) > 0);
+    totals.classList.toggle("neg", num(p.totalPnl) < 0);
+  }
+}
+
+function updateStrategyLabels() {
+  const s = selectedStrategy();
+  const name = s?.name || state.meta?.strategyName || "Main strategy";
+  const nameEl = $("#settingsStrategyName");
+  if (nameEl) nameEl.textContent = name;
+  const note = $("#storageNote");
+  if (note) note.textContent = s?.file ? `data/${s.file}` : "data/strategies/…";
+  const csv = $("#btnCsv");
+  if (csv) csv.href = strategyPath("/api/report?format=csv&download=1");
+  document.title = `OI Sniper - ${name}`;
+}
 
 /* ------------------------------------------------------------------ */
 /* Rendering                                                          */
@@ -1791,6 +1924,9 @@ function applyBootstrap(data) {
   state.equityCurve = data.equityCurve || [];
   state.logs = data.logs || [];
   state.venues = data.venues || { venues: [] };
+  state.strategies = data.strategies || state.strategies;
+  state.selectedId = data.selectedId || data.strategy?.id || state.selectedId;
+  state.portfolio = data.portfolio || state.portfolio;
   state.serverOffset = num(data.serverTime) - Date.now();
   state.prevTrades = num(state.stats.totalTrades);
   state.loaded = true;
@@ -2037,6 +2173,7 @@ async function openInspectorModal(symbol, side = "long") {
 
 function renderAll() {
   renderModeState();
+  renderStrategies();
   renderStatus();
   renderConnection();
   renderKpis();
@@ -2054,7 +2191,7 @@ async function loadBootstrap() {
     clearBeforeLoading("all");
   }
   try {
-    const data = await api("/api/bootstrap");
+    const data = await api(strategyPath("/api/bootstrap"));
     applyBootstrap(data);
     state.requestErrors = 0;
     clearServerError();
@@ -2090,13 +2227,14 @@ async function refreshLive() {
   if (liveBusy) return;
   liveBusy = true;
   try {
-    const data = await api("/api/live");
+    const data = await api(strategyPath("/api/live"));
     state.meta = data.meta || state.meta;
     state.stats = data.stats || state.stats;
     state.positions = data.positions || [];
     state.equityCurve = data.equityCurve || state.equityCurve;
     state.logs = data.logs || state.logs;
     state.venues = data.venues || state.venues;
+    state.selectedId = data.strategy?.id || state.selectedId;
     state.serverOffset = num(data.serverTime) - Date.now();
     state.requestErrors = 0;
     notificationManager.handlePositions(state.positions);
@@ -2148,16 +2286,20 @@ async function refreshMarkets() {
   state.lastServerMarketsAt = Date.now();
   marketsBusy = true;
   try {
-    const data = await api("/api/markets");
+    const data = await api(strategyPath("/api/markets"));
     state.markets = data.markets || [];
     state.meta = data.meta || state.meta;
     state.venues = data.venues || state.venues;
+    state.selectedId = data.selectedId || state.selectedId;
+    state.strategies = data.strategies || state.strategies;
+    state.portfolio = data.portfolio || state.portfolio;
     renderStatus();
     renderConnection();
     renderMarkets();
     renderCoinGlassTable();
     buildVenueToggles();
     renderVenueStatus();
+    renderStrategies();
   } catch (err) {
     noteServerError(err);
     /* keep old data */
@@ -2191,7 +2333,7 @@ async function refreshDashboard() {
   }
   dashBusy = true;
   try {
-    const data = await api("/api/dashboard");
+    const data = await api(strategyPath("/api/dashboard"));
     state.meta = data.meta || state.meta;
     state.stats = data.stats || state.stats;
     state.positions = data.positions || [];
@@ -2199,6 +2341,9 @@ async function refreshDashboard() {
     state.logs = data.logs || state.logs;
     state.venues = data.venues || state.venues;
     state.markets = data.markets || [];
+    state.strategies = data.strategies || state.strategies;
+    state.selectedId = data.selectedId || data.strategy?.id || state.selectedId;
+    state.portfolio = data.portfolio || state.portfolio;
     state.serverOffset = num(data.serverTime) - Date.now();
     state.requestErrors = 0;
     lastFollowerPollAt = Date.now();
@@ -2240,6 +2385,7 @@ async function refreshDashboard() {
     renderCoinGlassTable();
     buildVenueToggles();
     renderVenueStatus();
+    renderStrategies();
   } catch (err) {
     if (err.status === 404) {
       state.legacyApi = true;
@@ -2497,7 +2643,7 @@ async function refreshTrades(append = false) {
   tradesBusy = true;
   try {
     const offset = append ? state.trades.length : 0;
-    const data = await api(`/api/trades?limit=100&offset=${offset}`);
+    const data = await api(strategyPath(`/api/trades?limit=100&offset=${offset}`));
     if (append) state.trades = [...state.trades, ...(data.trades || [])];
     else state.trades = data.trades || [];
     state.tradesTotal = data.total || 0;
@@ -2545,13 +2691,18 @@ async function saveSettings() {
   btn.classList.add("is-loading");
   const payload = collectSettings();
   try {
-    const res = await api("/api/settings", { method: "POST", body: { settings: payload } });
+    const res = await api("/api/settings", {
+      method: "POST",
+      body: { settings: payload, strategy: strategyId() },
+    });
     state.settings = res.settings;
     state.initialFund = res.settings.totalFund;
     state.stats = res.stats || state.stats;
+    state.strategies = res.strategies || state.strategies;
     localStorage.setItem("oiSniperSettings", JSON.stringify(state.settings));
     renderSettingsForm();
     renderModeState();
+    renderStrategies();
     toast(res.reset ? "Settings saved: account reset" : "Settings saved", "success", res.reset ? "Total fund changed, so paper history was cleared." : "New trades use the new rules immediately.");
     await refreshLive();
     await refreshMarkets();
@@ -2570,9 +2721,14 @@ async function control(action, confirmText) {
     clearBeforeLoading("all");
   }
   try {
-    const res = await api("/api/control", { method: "POST", body: { action } });
+    const res = await api("/api/control", {
+      method: "POST",
+      body: { action, strategy: strategyId() },
+    });
+    if (res.strategies) state.strategies = res.strategies;
     if (action === "start" && res.ok === false) {
       toast("Cannot start", "error", res.error === "max-trades-reached" ? "Max trades reached. Reset the strategy first." : res.error);
+      renderStrategies();
       return;
     }
     if (action === "reset") {
@@ -2585,13 +2741,21 @@ async function control(action, confirmText) {
     if (action === "close-all") {
       toast(`Closed ${res.closed || 0} position(s)`, "info");
     }
+    if (action === "start-all") {
+      startDeviceFeed();
+      toast(`Started ${res.started || 0} strateg${res.started === 1 ? "y" : "ies"}`, "success", "Each account scans with its own filters and fund.");
+    }
+    if (action === "pause-all") {
+      toast(`Paused ${res.paused || 0} strateg${res.paused === 1 ? "y" : "ies"}`, "warn", "Open positions are still managed.");
+    }
+    renderStrategies();
     await refreshLive();
     await refreshMarkets();
-    if (action === "pause") toast("Bot paused", "warn", "Open positions are still managed.");
+    if (action === "pause") toast("Strategy paused", "warn", "Open positions are still managed.");
     if (action === "start") {
       // The click is also the signal to start scraping from this device.
       startDeviceFeed();
-      toast("Bot started", "success", deviceModeActive() ? "Scanning for signals · device feed running in this tab." : "Scanning for signals…");
+      toast("Strategy started", "success", deviceModeActive() ? "Scanning for signals · device feed running in this tab." : "Scanning for signals…");
     }
   } catch (err) {
     toast("Action failed", "error", err.message);
@@ -2603,7 +2767,7 @@ async function manualOpen(symbol, side = null, button = null) {
   try {
     const res = await api("/api/trade/open", {
       method: "POST",
-      body: { symbol, side, force: true },
+      body: { symbol, side, force: true, strategy: strategyId() },
     });
     const p = res.position;
     toast(`Opened ${p.side.toUpperCase()} ${p.symbol}`, "success", `@ ${price(p.entryPrice)} · ${money(p.margin)} margin`);
@@ -2643,7 +2807,7 @@ async function manualOpen(symbol, side = null, button = null) {
 async function closePosition(id, button) {
   if (button) button.disabled = true;
   try {
-    const res = await api("/api/trade/close", { method: "POST", body: { id } });
+    const res = await api("/api/trade/close", { method: "POST", body: { id, strategy: strategyId() } });
     toast("Position closed", res.trade && res.trade.pnlNet >= 0 ? "success" : "warn", res.trade ? `${signedMoney(res.trade.pnlNet)} · ${res.trade.exitReason}` : "");
     await refreshLive();
     await refreshTrades();
@@ -2660,7 +2824,7 @@ async function manualScan() {
   btn.classList.add("is-loading");
   btn.textContent = "Scanning…";
   try {
-    const res = await api("/api/scan", { method: "POST", body: {} });
+    const res = await api("/api/scan", { method: "POST", body: { strategy: strategyId() } });
     if (res.error === "no-filters") {
       toast("No filters configured", "warn", "Enable at least one OI or Volume row and set a threshold.");
     } else if (res.error === "already-scanning") {
@@ -2686,6 +2850,170 @@ async function manualScan() {
 }
 
 /* ------------------------------------------------------------------ */
+/* Strategy actions                                                   */
+/* ------------------------------------------------------------------ */
+async function selectStrategy(id, { force = false } = {}) {
+  const target = String(id || "");
+  if (!target) return;
+  if (target === strategyId() && !force) return;
+  if (state.dirty && !force && !window.confirm("Discard unsaved settings changes and switch strategy?")) return;
+  try {
+    if (target !== strategyId()) {
+      const res = await api("/api/strategies/select", { method: "POST", body: { id: target } });
+      state.selectedId = res.selectedId || target;
+    }
+    state.dirty = false;
+    await loadBootstrap();
+    renderStrategies();
+  } catch (err) {
+    toast("Could not switch strategy", "error", err.message);
+  }
+}
+
+async function toggleStrategy(id) {
+  const s = strategyById(id);
+  try {
+    const res = await api("/api/control", {
+      method: "POST",
+      body: { action: "toggle", strategy: id },
+    });
+    if (res.strategies) state.strategies = res.strategies;
+    renderStrategies();
+    if (id === strategyId()) {
+      await refreshLive();
+      await refreshMarkets();
+    }
+    const running = strategyById(id)?.running;
+    toast(`${s?.name || "Strategy"} ${running ? "started" : "paused"}`, running ? "success" : "warn", running ? "Scanning for signals with its own rules." : "Open positions are still managed.");
+    if (running) startDeviceFeed();
+  } catch (err) {
+    toast("Action failed", "error", err.message);
+  }
+}
+
+function fillCloneOptions(selectedId) {
+  const select = $("#strategyClone");
+  if (!select) return;
+  const list = state.strategies || [];
+  select.innerHTML =
+    `<option value="">Blank - engine defaults</option>` +
+    list
+      .map((s) => `<option value="${esc(s.id)}">${esc(s.name)} · ${money(s.initialFund)}</option>`)
+      .join("");
+  select.value = selectedId && list.some((s) => s.id === selectedId) ? selectedId : "";
+}
+
+function openStrategyDialog(mode = "create", id = null) {
+  const dialog = $("#strategyDialog");
+  if (!dialog) return;
+  const editing = mode === "edit";
+  const s = editing ? strategyById(id) : null;
+  state.dialog = { mode: editing ? "edit" : "create", id: editing ? id : null };
+
+  $("#strategyDialogTitle").textContent = editing ? "Edit strategy" : "New strategy";
+  $("#strategyDialogSub").textContent = editing
+    ? "Rename the account or change its paper fund. Settings stay independent."
+    : "Each strategy is a separate paper account with its own fund and rules.";
+  $("#strategyName").value = editing ? s?.name || "" : `Strategy ${(state.strategies || []).length + 1}`;
+  $("#strategyFund").value = editing
+    ? num(s?.initialFund, num(state.settings?.totalFund, 500))
+    : num(state.settings?.totalFund, 500);
+  $("#strategyCloneRow").classList.toggle("hidden", editing);
+  $("#strategyStartRow").classList.toggle("hidden", editing);
+  $("#strategyStart").checked = !editing;
+  fillCloneOptions(editing ? null : strategyId());
+  $("#btnStrategySave").textContent = editing ? "Save changes" : "Create strategy";
+  $("#btnStrategyDelete").classList.toggle("hidden", !editing || (state.strategies || []).length <= 1);
+  $("#strategyDialogNote").textContent = editing
+    ? "Changing the fund on an account with trade history resets that strategy."
+    : "A new strategy starts with an empty trade history. Clone copies the selected account's settings, not its trades.";
+
+  if (typeof dialog.showModal === "function") dialog.showModal();
+  else dialog.setAttribute("open", "");
+  setTimeout(() => $("#strategyName")?.focus(), 30);
+}
+
+function closeStrategyDialog() {
+  const dialog = $("#strategyDialog");
+  if (!dialog) return;
+  if (typeof dialog.close === "function") dialog.close();
+  else dialog.removeAttribute("open");
+}
+
+async function submitStrategyForm(event) {
+  event.preventDefault();
+  const mode = state.dialog.mode;
+  const id = state.dialog.id;
+  const name = String($("#strategyName")?.value || "").trim();
+  const fund = Number($("#strategyFund")?.value);
+  if (!name) {
+    toast("Name required", "error", "Give this strategy a short, unique name.");
+    return;
+  }
+  if (!Number.isFinite(fund) || fund < 1) {
+    toast("Invalid fund", "error", "The paper fund must be at least 1 USDT.");
+    return;
+  }
+  const btn = $("#btnStrategySave");
+  if (btn) btn.disabled = true;
+  try {
+    if (mode === "edit") {
+      const res = await api(`/api/strategies/${encodeURIComponent(id)}`, {
+        method: "POST",
+        body: { name, fund },
+      });
+      state.strategies = res.strategies || state.strategies;
+      closeStrategyDialog();
+      await loadBootstrap();
+      toast("Strategy updated", "success", res.reset ? "The fund changed, so this account was reset." : "Name and fund saved.");
+    } else {
+      const res = await api("/api/strategies", {
+        method: "POST",
+        body: {
+          name,
+          fund,
+          cloneFrom: $("#strategyClone")?.value || null,
+          start: Boolean($("#strategyStart")?.checked),
+        },
+      });
+      state.strategies = res.strategies || state.strategies;
+      if (res.strategy?.id) state.selectedId = res.strategy.id;
+      closeStrategyDialog();
+      await loadBootstrap();
+      toast("Strategy created", "success", `${name} · ${money(fund)} paper fund${$("#strategyStart")?.checked ? " · starting now" : ""}.`);
+      if ($("#strategyStart")?.checked) startDeviceFeed();
+    }
+  } catch (err) {
+    toast(mode === "edit" ? "Could not update strategy" : "Could not create strategy", "error", err.message);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function deleteStrategy(id) {
+  const s = strategyById(id);
+  if (!s) return;
+  if (!window.confirm(`Delete "${s.name}"?\n\nThis permanently removes its fund, trades and history.`)) return;
+  try {
+    const res = await api(`/api/strategies/${encodeURIComponent(id)}`, { method: "DELETE" });
+    state.strategies = res.strategies || state.strategies;
+    if (res.selectedId) state.selectedId = res.selectedId;
+    closeStrategyDialog();
+    await loadBootstrap();
+    toast("Strategy deleted", "info", `${s.name} was removed.`);
+  } catch (err) {
+    toast("Could not delete strategy", "error", err.message);
+  }
+}
+
+function setCompareOpen(open) {
+  state.compareOpen = Boolean(open);
+  $("#comparePanel")?.classList.toggle("hidden", !state.compareOpen);
+  const btn = $("#btnCompare");
+  if (btn) btn.textContent = state.compareOpen ? "Hide comparison" : "Compare";
+}
+
+/* ------------------------------------------------------------------ */
 /* Events                                                             */
 /* ------------------------------------------------------------------ */
 async function saveCgKey(clear) {
@@ -2701,8 +3029,10 @@ async function saveCgKey(clear) {
       body: clear ? { clear: true } : { apiKey: key },
     });
     if (res.settings) state.settings = res.settings;
+    state.strategies = res.strategies || state.strategies;
     if (input) input.value = "";
     renderSettingsForm();
+    renderStrategies();
     toast(
       clear ? "API key cleared" : "API key saved",
       "success",
@@ -2734,10 +3064,37 @@ $("#btnCloseAll").addEventListener("click", () =>
   control("close-all", "Close every open paper position at the current market price?")
 );
 $("#btnReport").addEventListener("click", () => {
-  window.location.href = "/api/report?format=html&download=1";
+  window.location.href = strategyPath("/api/report?format=html&download=1");
 });
 $("#btnTradesCsv").addEventListener("click", () => {
-  window.location.href = "/api/report?format=csv&download=1";
+  window.location.href = strategyPath("/api/report?format=csv&download=1");
+});
+
+$("#strategyTabs").addEventListener("click", (e) => {
+  const chip = e.target.closest("[data-strategy]");
+  if (chip) selectStrategy(chip.dataset.strategy);
+});
+$("#strategyBody").addEventListener("click", (e) => {
+  const action = e.target.closest("[data-saction]");
+  if (action) {
+    e.stopPropagation();
+    if (action.dataset.saction === "toggle") toggleStrategy(action.dataset.id);
+    else if (action.dataset.saction === "edit") openStrategyDialog("edit", action.dataset.id);
+    return;
+  }
+  const row = e.target.closest("tr[data-strategy]");
+  if (row) selectStrategy(row.dataset.strategy);
+});
+$("#btnNewStrategy").addEventListener("click", () => openStrategyDialog("create"));
+$("#btnStartAll").addEventListener("click", () => control("start-all"));
+$("#btnPauseAll").addEventListener("click", () => control("pause-all"));
+$("#btnCompare").addEventListener("click", () => setCompareOpen(!state.compareOpen));
+$("#btnHideCompare").addEventListener("click", () => setCompareOpen(false));
+$("#strategyForm").addEventListener("submit", submitStrategyForm);
+$("#btnStrategyClose").addEventListener("click", closeStrategyDialog);
+$("#btnStrategyCancel").addEventListener("click", closeStrategyDialog);
+$("#btnStrategyDelete").addEventListener("click", () => {
+  if (state.dialog.mode === "edit" && state.dialog.id) deleteStrategy(state.dialog.id);
 });
 
 $("#marketTabs").addEventListener("click", (e) => {
@@ -2768,7 +3125,7 @@ $("#btnClearLogs").addEventListener("click", () => {
   renderLogs();
 });
 $("#btnDownloadLogs").addEventListener("click", () => {
-  window.location.href = "/api/logs?download=1";
+  window.location.href = strategyPath("/api/logs?download=1");
   toast("Preparing log download", "info", "Includes bot activity logs plus collected trade dataset records.");
 });
 
@@ -3754,6 +4111,9 @@ onStatusChange((status) => {
   } else if (status.kind === "leader") {
     clearBanner("secondary");
     toast("Leader active", "success", "This tab is managing the trading engine.");
+  } else if (status.kind === "server") {
+    clearBanner("secondary");
+    clearBanner("worker-error");
   } else if (status.kind === "tab-hidden") {
     setBanner("tab-hidden", {
       level: "warn",
@@ -3799,6 +4159,8 @@ onStatusChange((status) => {
   }
 });
 
+setCompareOpen(state.compareOpen);
+
 initApi().then(() => {
   loadBootstrap().then(() => {
     notificationManager.init();
@@ -3810,9 +4172,11 @@ initApi().then(() => {
     setInterval(tickClock, 1000);
     loop(refreshDashboard, 4000);
     loop(refreshTrades, 30000);
+    startDeviceFeed();
     document.addEventListener("visibilitychange", () => {
       if (document.hidden) return;
       refreshDashboard();
+      deviceFastTick();
       renderServerNotice();
     });
     window.addEventListener("keydown", (e) => {

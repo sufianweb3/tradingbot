@@ -834,7 +834,12 @@ test("T21 & T22: Dual-worker MessageChannel pipeline, PriorityScheduler backpres
     dataWorker.ingestBatch([
       { symbol: "BTC", price: 65000, oiUsd: 1000000, volUsd24h: 2000000, oi: { "5m": 2.5 } },
     ]);
-    await new Promise((r) => setTimeout(r, 30));
+    // MessageChannel delivery is asynchronous; poll instead of assuming a fixed
+    // 30 ms is enough when the whole suite is running in parallel.
+    const deadline = Date.now() + 2000;
+    while (engineWorker.coinMap.get("BTC")?.price !== 65000 && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
     assert.equal(engineWorker.coinMap.get("BTC")?.price, 65000);
   } finally {
     port1.close();

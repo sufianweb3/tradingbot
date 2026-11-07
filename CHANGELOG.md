@@ -27,6 +27,36 @@ SemVer major (`V1` = `1.x.x`). Runtime data is never committed.
 - Same-coin locking takes precedence over `maxPositionsPerCoin`, so stacking is
   blocked while the lock is active.
 
+## [V3] - 2026-11-07
+
+### Added
+
+- **Multi-strategy portfolio.** Run up to 20 independent paper accounts (5-7 is a
+  comfortable target) at the same time. Each strategy has its own fund, filters,
+  sizing, exit plan, positions, trades, equity curve, logs and JSON state file.
+- `src/portfolio.js` owns strategy lifecycle: create, clone, rename, select,
+  start/pause one or all, reset, delete, compare and portfolio-wide summaries.
+- `src/marketFeed.js` extracts the CoinGlass cache/device feed/connection status
+  so every strategy reads one shared snapshot instead of scraping N times.
+- Shared `ExchangeHub` across strategies, plus in-flight quote coalescing for
+  accounts holding the same coin.
+- Dashboard **strategy bar** with live chips, portfolio totals and start-all /
+  pause-all / compare actions; **strategy comparison** table with per-row
+  start/pause/edit; **create/clone** dialog and delete action.
+- New API: `/api/strategies`, `/api/strategies/select`, `/api/strategies/:id`,
+  `/api/compare`; existing endpoints accept an optional `strategy` parameter and
+  default to the selected account.
+- `test/portfolio.test.js` covers isolation, cloning, persistence, legacy
+  migration, selection, start/pause, deletion and shared API keys.
+
+### Changed
+
+- Local persistence moved to `data/strategies/index.json` plus
+  `data/strategies/<id>.json`. The legacy `data/state.json` is adopted as the
+  `main` strategy on first boot, so existing history is preserved.
+- AI dataset folders are namespaced per strategy: `data/ai-dataset/<id>/`.
+- Version bumped to `3.0.0`.
+
 ## [V2] - 2026-11-04
 
 ### Added
