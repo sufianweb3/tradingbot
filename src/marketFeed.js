@@ -105,6 +105,7 @@ export class MarketFeed {
         volUsd24h: toNum(c?.volUsd24h, 0) ?? 0,
         oiChange24h: toNum(c?.oiChange24h),
         volChange24h: toNum(c?.volChange24h),
+        priceChange5m: toNum(c?.priceChange5m),
         priceChange1h: toNum(c?.priceChange1h),
         priceChange24h: toNum(c?.priceChange24h),
         funding: toNum(c?.funding),

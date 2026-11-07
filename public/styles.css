@@ -403,6 +403,13 @@ select { cursor: pointer; appearance: none; background-image: linear-gradient(45
 .data-table tbody tr { transition: background .12s; }
 .data-table tbody tr:hover { background: rgba(33, 52, 74, 0.22); }
 .data-table tbody tr:last-child td { border-bottom: 0; }
+/* Signal snapshot columns at the end of trade history. */
+.data-table th.sig-col { color: var(--blue); }
+.data-table th.sig-first, .data-table td.sig-first { border-left: 1px solid var(--line); }
+.data-table td.sig-col { color: var(--muted); }
+.data-table td.sig-col.pos { color: var(--green); }
+.data-table td.sig-col.neg { color: var(--red); }
+.data-table td.sig-col.subtle { color: var(--dim); }
 .coin-cell { display: flex; align-items: center; gap: 7px; min-width: 92px; }
 .coin-logo { width: 19px; height: 19px; border-radius: 50%; background: #1a2635; object-fit: cover; flex: none; }
 .coin-fallback {

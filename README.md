@@ -83,7 +83,8 @@ by default. Configure at least one OI/Volume row in the dashboard, press
 - **Live scanner** — *Qualified* / *Near miss* / *All* tabs, search, per-row
   pass/fail colouring and one-click manual trade.
 - **Fund PnL** — equity curve with hover tooltip and initial-fund baseline.
-- **Trade history** — filterable, paginated, CSV export.
+- **Trade history** — filterable, paginated, CSV export. Each row also shows the
+  entry snapshot: OI 5m/15m/30m/1h/4h, volume 1h/4h and price change 5m/1h.
 - **Activity log** — newest-first engine events.
 - **Report** — downloads a self-contained HTML report (equity SVG + full trade
   history). `CSV` and `JSON` exports are also available from the API.
@@ -490,7 +491,7 @@ What is recorded:
   fees, slippage, TP/SL/trailing and max-position rule.
 - **Coin data** at entry: the exact screener row (`Coin`, price, OI 5m/15m/30m/
   1h/4h, Volume 1h/4h, venue, signal, score, pass count) plus the raw CoinGlass
-  coin object (OI USD, volume USD, funding, 1h/24h price changes).
+  coin object (OI USD, volume USD, funding, 5m/1h/24h price changes).
 - **Trade data**: margin, notional, quantity, leverage, fees, entry/signal price,
   SL/TP1/TP max/liquidation levels, trailing settings and the signal checks.
 - **Price history**: every second from entry to close, including the exchange
@@ -578,6 +579,12 @@ Notes:
 - A Durable Object keeps running the code version it started with, so after
   changing engine code bump `ENGINE_GENERATION` in `cf/build.js`. That starts a
   fresh paper account; settings and the API key must be re-entered.
+
+### Vercel preview
+
+`vercel.json` builds the static dashboard from `public/` into `dist/` and
+rewrites `/api/*` to the Worker above. Vercel is therefore a frontend preview:
+the engine, trades and persistent state still live in Cloudflare.
 
 ### Cloudflare MCP server
 

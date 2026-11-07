@@ -408,6 +408,7 @@ export class Engine {
         vol: coin.vol,
         oiUsd: coin.oiUsd,
         volUsd24h: coin.volUsd24h,
+        priceChange5m: coin.priceChange5m,
         priceChange1h: coin.priceChange1h,
         priceChange24h: coin.priceChange24h,
         funding: coin.funding,
@@ -871,6 +872,9 @@ export class Engine {
         oiUsd: coin.oiUsd,
         volUsd24h: coin.volUsd24h,
         price: coin.price,
+        priceChange5m: toNum(coin.priceChange5m),
+        priceChange1h: toNum(coin.priceChange1h),
+        priceChange24h: toNum(coin.priceChange24h),
       },
     };
 

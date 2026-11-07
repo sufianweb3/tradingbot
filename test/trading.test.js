@@ -421,6 +421,12 @@ function reportData() {
       roe: 4,
       exitReason: "TP max",
       durationMs: 3600000,
+      signal: {
+        oi: { "5m": 4.5, "15m": 6, "30m": 7, "1h": 8, "4h": 9 },
+        vol: { "1h": 40, "4h": 55 },
+        priceChange5m: 0.3,
+        priceChange1h: -1.2,
+      },
     },
   ];
   const stats = computeStats({
@@ -454,8 +460,10 @@ test("renderCsv emits a header and one row per trade", () => {
   const lines = csv.trim().split("\r\n");
   assert.equal(lines.length, 2);
   assert.ok(lines[0].startsWith("id,symbol,side,venue"));
+  assert.ok(lines[0].endsWith("oi5m,oi15m,oi30m,oi1h,oi4h,vol1h,vol4h,priceChange5m,priceChange1h"));
   assert.ok(lines[1].includes("BTC"));
   assert.ok(lines[1].includes("TP max"));
+  assert.ok(lines[1].endsWith("4.5,6,7,8,9,40,55,0.3,-1.2"));
 });
 
 test("renderJson round-trips the report payload", () => {
