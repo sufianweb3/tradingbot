@@ -5,6 +5,7 @@
   "type": "module",
   "description": "Coinglass OI/Volume screener + multi-strategy multi-exchange paper trading bot",
   "scripts": {
+    "build": "node scripts/build.js",
     "start": "node server.js",
     "dev": "node --watch server.js",
     "test": "node --test test/*.test.js",

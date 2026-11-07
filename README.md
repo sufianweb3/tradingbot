@@ -580,6 +580,12 @@ Notes:
   changing engine code bump `ENGINE_GENERATION` in `cf/build.js`. That starts a
   fresh paper account; settings and the API key must be re-entered.
 
+### Vercel preview
+
+`vercel.json` builds the static dashboard from `public/` into `dist/` and
+rewrites `/api/*` to the Worker above. Vercel is therefore a frontend preview:
+the engine, trades and persistent state still live in Cloudflare.
+
 ### Cloudflare MCP server
 
 The project registers Cloudflare's managed MCP server in `opencode.json`:

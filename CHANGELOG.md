@@ -15,6 +15,12 @@ SemVer major (`V1` = `1.x.x`). Runtime data is never committed.
 - CoinGlass market rows now carry the 5m price change (server, API and browser
   device feed), and positions store it in their `signal` snapshot.
 
+### Fixed
+
+- Vercel preview builds no longer fail with `Missing script: "build"`.
+  `npm run build` copies the static dashboard into `dist/`, and `vercel.json`
+  proxies `/api/*` to the Cloudflare Worker so previews stay functional.
+
 ## [V3] - 2026-11-07
 
 ### Added
