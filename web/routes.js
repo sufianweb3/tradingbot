@@ -66,6 +66,8 @@ export async function handleRpcRequest({ path, method = "GET", body = {}, query 
           coinglassConnected: cg.connected && !cgStale,
           coinglassStale: cgStale,
           stopNewEntries: stopEntries,
+          coinglassError: cgClient ? cgClient.status.lastError : null,
+          coinglassApiError: cgClient ? cgClient.status.apiError : null,
           coinglassCoins: cg.coins,
           coinglassSource: cg.source,
           coinglassApiKeySet: cg.apiKeySet,
@@ -118,6 +120,8 @@ export async function handleRpcRequest({ path, method = "GET", body = {}, query 
           stats: engine.getStats(),
           coinglassStale: cgClient ? cgClient.isStale() : false,
           stopNewEntries: cgClient ? cgClient.status.stopNewEntries : false,
+          coinglassError: cgClient ? cgClient.status.lastError : null,
+          coinglassApiError: cgClient ? cgClient.status.apiError : null,
         },
       };
     }

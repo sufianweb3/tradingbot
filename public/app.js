@@ -58,6 +58,7 @@ const state = {
     coins: [],
     latencyMs: null,
     pausedUntil: 0,
+    lastError: null,
   },
   serverPausedUntil: 0,
   quotaNotice: false,
@@ -2360,13 +2361,16 @@ function renderDeviceBadge() {
   el.classList.remove("hidden");
   if (d.enabled) {
     el.className = "cg-device on";
+    el.title = "";
     const who = isLeader() ? "this tab" : "another tab";
     el.textContent = `device feed · ${who} feeding · top ${d.coins.length} coins · ${Math.round(d.latencyMs || 0)} ms`;
   } else if (d.pausedUntil > Date.now()) {
     el.className = "cg-device off";
     el.textContent = "device feed paused (retrying)…";
+    el.title = d.lastError || "The browser could not reach CoinGlass. Retrying.";
   } else {
     el.className = "cg-device";
+    el.title = d.lastError || "";
     el.textContent = d.busy ? "device feed: scraping…" : "device feed idle";
   }
 }
@@ -2407,6 +2411,7 @@ async function deviceFastTick() {
     const res = await fetchTopMarkets();
     state.device.enabled = true;
     state.device.errors = 0;
+    state.device.lastError = null;
     state.device.latencyMs = res.fetchedInMs;
     state.device.lastFetchAt = Date.now();
     state.device.coins = mergeTopRows(state.device.coins, res.coins);
@@ -2417,8 +2422,10 @@ async function deviceFastTick() {
       // Fast lane: only the top-100 rows, merged into the server's table.
       pushDeviceFeed(res, { merge: true, coins: res.coins }).catch(() => {});
     }
-  } catch {
+  } catch (err) {
     state.device.errors++;
+    state.device.lastError = err?.message || "device-feed-failed";
+    console.warn("[device-feed]", state.device.lastError);
     if (state.device.errors >= DEVICE_MAX_ERRORS) {
       state.device.enabled = false;
       state.device.pausedUntil = Date.now() + 15000;
@@ -2441,12 +2448,14 @@ async function deviceFullTick() {
     state.device.coins = res.coins;
     state.device.enabled = true;
     state.device.errors = 0;
+    state.device.lastError = null;
     state.device.latencyMs = res.fetchedInMs;
     applyLiveRows(res.coins);
     renderDeviceBadge();
     await pushDeviceFeed(res, { coins: res.coins });
-  } catch {
-    /* the fast tick keeps the top rows alive */
+  } catch (err) {
+    state.device.lastError = err?.message || "device-feed-full-failed";
+    console.warn("[device-feed-full]", state.device.lastError);
   } finally {
     deviceFullBusy = false;
   }
@@ -3686,7 +3695,16 @@ onLiveTick((tick) => {
   }
 
   if (tick.stopNewEntries) {
-    setBanner("offline", { level: "warn", message: "CoinGlass feed offline. Stop-new-entries safety gate active." });
+    const detail = String(
+      tick.coinglassApiError || tick.coinglassError || state.device.lastError || ""
+    ).trim();
+    const suffix = detail
+      ? ` (${detail.length > 120 ? detail.slice(0, 117) + "..." : detail})`
+      : "";
+    setBanner("offline", {
+      level: "warn",
+      message: `CoinGlass feed offline${suffix}. Stop-new-entries safety gate active.`,
+    });
   } else {
     clearBanner("offline");
   }

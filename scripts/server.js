@@ -8,6 +8,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Engine } from "../src/engine.js";
+import { cgFetch } from "../src/coinglass.js";
 import { attachAiTradeLogger } from "../src/aiDataset.js";
 import { logExportFilename, streamBotLogExport } from "../src/logExport.js";
 import { renderCsv, renderJson, renderReport } from "../src/report.js";
@@ -278,6 +279,19 @@ const server = http.createServer(async (req, res) => {
           coinglassSource: cg.source,
           coinglassApiKeySet: cg.apiKeySet,
         });
+      }
+
+      if (method === "GET" && pathname === "/api/coinglass/markets") {
+        const page = Math.max(1, Math.min(40, Number(url.searchParams.get("page")) || 1));
+        const target =
+          `https://capi.coinglass.com/api/home/v2/coinMarkets?sort=openInterest` +
+          `&order=desc&keyword=&pageNum=${page}&pageSize=100&ex=all&tags=crypto`;
+        try {
+          const data = await cgFetch(target);
+          return sendJson(res, 200, data);
+        } catch (err) {
+          return sendJson(res, 502, { ok: false, error: err.message || "coinglass-proxy-failed" });
+        }
       }
 
       if (method === "GET" && pathname === "/api/bootstrap") {
