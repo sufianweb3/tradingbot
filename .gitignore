@@ -1,13 +1,36 @@
+# Dependencies
 node_modules/
+
+# Build output
 dist/
-data/
+.next/
+out/
+*.tsbuildinfo
+next-env.d.ts
+
+# Runtime data (bot state, AI dataset, logs)
+backend/data/
 *.log
 *.tmp
-.wrangler/
+npm-debug.log*
 
 # Local secrets
 .env
+.env.*
+!.env.example
 .dev.vars
+
+# Tooling caches
+.wrangler/
+.vercel/
+.turbo/
+coverage/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
 
 # Local reference copy of the CoinGlass web bundle (not used at runtime)
 js/
