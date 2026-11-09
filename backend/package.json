@@ -1,0 +1,24 @@
+{
+  "name": "oi-sniper-paper-bot",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Coinglass OI/Volume screener + multi-exchange paper trading bot",
+  "scripts": {
+    "build": "npm --prefix dashboard run build",
+    "build:bot": "node scripts/build.js --skip-dashboard",
+    "build:dashboard": "npm --prefix dashboard run build",
+    "dev": "node scripts/build.js --skip-dashboard && node scripts/server.js",
+    "dev:dashboard": "npm --prefix dashboard run dev",
+    "type-check": "npm --prefix dashboard run type-check",
+    "start": "node scripts/server.js",
+    "test": "node --test test/*.test.js",
+    "ai:export": "node scripts/ai-export.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "fake-indexeddb": "^6.1.0"
+  }
+}
