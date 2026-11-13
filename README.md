@@ -4,8 +4,13 @@ A local, browser-based **paper-trading** bot. It screens the full CoinGlass mark
 table for open-interest and volume percentage moves, prices every coin from public
 exchange feeds, and simulates leveraged trades with a configurable exit plan.
 
+Run **up to 20 strategies side by side** (5-7 is a comfortable target), each with
+its own fund, filters, sizing, exit plan, positions and trade history. All
+strategies share one exchange hub and one CoinGlass snapshot, so running several
+accounts does not multiply the network load.
+
 Nothing is ever sent to an exchange. All fills, fees, slippage, PnL and reports are
-simulated in a local JSON file.
+simulated in local JSON files.
 
 ```
 CoinGlass OI / volume %  ──►  filter + rank  ──►  open paper trade
@@ -46,7 +51,7 @@ by default. Configure at least one OI/Volume row in the dashboard, press
 | ---------- | -------------- | -------------------------------- |
 | `PORT`     | `3000`         | HTTP port                        |
 | `HOST`     | `127.0.0.1`    | Bind address (local only)        |
-| `DATA_DIR` | `./data`       | Where `state.json` is persisted  |
+| `DATA_DIR` | `./data`       | Runtime data (`strategies/`, AI dataset) |
 
 ---
 
@@ -58,9 +63,17 @@ paper mode as the default and shows whether it is connected to the bot or runnin
 on sample data. Build it with `npm run build` (or `npm run build:dashboard` to
 refresh only the React app).
 
+- **Strategy bar** - chips for every paper account with live P/L, a portfolio
+  summary (equity, P/L, open trades, running count), and **+ New strategy**,
+  **Start all**, **Pause all** and **Compare** actions. Click a chip or table row
+  to open that account.
+- **Strategy comparison** - one row per account: state, fund, equity, P/L,
+  return, open/closed trades, win rate, max drawdown and leverage. Start/pause or
+  edit a strategy directly from the table.
 - **Strategy settings** (left panel) - capital, leverage, sizing, SL/TP, trailing,
   OI/volume filters with per-row on/off toggles, direction, universe limits, max
-  trades, scan/refresh timing, fees, venues.
+  trades, scan/refresh timing, fees, venues. Every field belongs to the selected
+  strategy only.
 - **KPI strip** - equity, total P/L, open P/L, win rate, profit factor, max
   drawdown, trade count, fees.
 - **CoinGlass connection** - a green **Connected** / red **Disconnected** pill in
@@ -85,6 +98,12 @@ refresh only the React app).
 Settings are only applied when you press **Save & apply**. Unsaved changes show an
 `unsaved` badge. Changing **Total fund** mid-run resets the paper account (the fund
 defines the run).
+
+**New strategy** creates an empty paper account. Choose a name, a fund and
+optionally a strategy to clone the settings from; cloning copies rules only, never
+trades or positions. **Edit** renames an account or changes its fund, and
+**Delete** removes its state file (the last remaining strategy cannot be deleted).
+The CoinGlass API key is shared by the whole portfolio.
 
 ---
 
@@ -315,9 +334,7 @@ GET https://open-api-v4.coinglass.com/api/futures/coins-markets
   source immediately.
 
 > The official `coins-markets` endpoint requires a **Standard** plan (Hobbyist
-> and Startup return an error). On Cloudflare Workers this is the only working
-> CoinGlass path, because CoinGlass blocks Cloudflare's egress IPs from the
-> scraper endpoint.
+> and Startup return an error).
 
 ### Device feed (scrape from your browser)
 
@@ -330,41 +347,20 @@ press **Start** (or just open the dashboard) and the feed begins.
 - **Full lane** - all 7 pages every 30 s, replacing the table so every coin is
   current.
 - The engine prefers a feed younger than **90 s** over any server-side scrape, so
-  the Cloudflare deployment produces signals without an API key. The window is
-  wide because browsers throttle hidden tabs to about one timer per minute.
+  the engine produces signals without an API key. The window is wide because
+  browsers throttle hidden tabs to about one timer per minute.
 - The badge under *CoinGlass live data* shows `device feed · top N coins · ms`.
 - **The tab must stay open, and ideally visible.** Closed tabs stop the feed;
   hidden tabs are throttled by the browser (Chrome: ~1/min) and may be frozen
   after a while. Locally, the Node process keeps scraping on its own regardless.
 
-### Cloudflare request budget (free plan)
+### Polling budget
 
-Workers Free allows **100,000 Durable Object requests per day**, and every HTTP
-request, alarm and WebSocket message counts. The first version polled
-`/api/live` + `/api/markets` every 1-1.5 s and pushed the device feed every 2 s,
-which is about **219k/day** - the live bot was therefore killed by the quota
-after roughly 11 hours.
-
-The current design budgets about **47k/day idle / 76k/day with an open position**:
-
-| Source | Rate | Requests/day |
-| ------ | ---- | ------------ |
-| `/api/dashboard` (live + markets in one response) | 4 s | 21.6k |
-| Device feed fast push | 5 s | 17.3k |
-| Device feed full push | 30 s | 2.9k |
-| `/api/trades` | 30 s | 2.9k |
-| Scan alarm | 30 s | 2.9k |
-| Price-tick alarm (only while a position is open) | 3 s | 28.8k |
-
-The price loop now stops completely when flat, and the dashboard pauses network
-polling while the tab is hidden. Tabs elect a leader through a localStorage
-heartbeat: only that tab pushes the device feed, and any other tab polls once
-every ~25 s instead of every 4 s. If the leader is closed, another tab takes
-over within ~10 s. Keep at least one tab open.
-
-If the quota is exhausted the Worker returns `500`. The dashboard shows a
-banner, pauses requests for 60 s, and resumes automatically. The daily limit
-resets at **00:00 UTC**. The Workers Paid plan ($5/mo) removes the daily cap.
+The dashboard combines live state and the screener into one `/api/dashboard`
+request every 4 s and polls `/api/trades` every 30 s. Tabs elect a leader through
+a localStorage heartbeat: only that tab pushes the device feed, and other tabs
+poll once every ~25 s instead of every 4 s. If the leader is closed, another tab
+takes over within ~10 s. Keep at least one tab open for the device feed.
 
 
 ### Latency
@@ -401,26 +397,36 @@ off for 20 s instead of retrying on every poll.
 
 ## HTTP API
 
-All endpoints return JSON unless noted.
+All endpoints return JSON unless noted. Endpoints that act on one account accept
+an optional `strategy=<id>` query parameter (GET) or `strategy` field in the JSON
+body (POST); without it the selected strategy is used. The old single-strategy API
+is therefore unchanged.
 
 | Method | Path                | Purpose |
 | ------ | ------------------- | ------- |
-| GET    | `/api/health`       | Liveness, running flag, counts, CoinGlass connection state |
-| GET    | `/api/bootstrap`    | Settings, stats, markets, trades, curve, logs |
+| GET    | `/api/health`       | Liveness, portfolio counts, CoinGlass connection state |
+| GET    | `/api/strategies`   | `{ selectedId, strategies, portfolio }` |
+| POST   | `/api/strategies`   | Create: `{ name, fund, settings?, cloneFrom?, start? }` |
+| POST   | `/api/strategies/select` | Select the active account: `{ id }` |
+| GET    | `/api/strategies/:id` | One strategy summary, settings and stats |
+| POST   | `/api/strategies/:id` | Update name/fund (and optionally start/pause) |
+| DELETE | `/api/strategies/:id` | Delete an account and its state file |
+| GET    | `/api/compare`      | Same payload as `/api/strategies` |
+| GET    | `/api/bootstrap`    | Settings, stats, markets, trades, curve, logs, portfolio |
 | GET    | `/api/live`         | Stats, positions, curve, logs, venues, CoinGlass status |
-| GET    | `/api/dashboard`    | Live state + screener rows + meta in one request (used by the UI) |
+| GET    | `/api/dashboard`    | Live state + screener rows + meta + portfolio in one request |
 | GET    | `/api/markets`      | Screener rows + meta (auto-refreshes CoinGlass after 60s) |
 | GET    | `/api/config`       | Settings, initial fund, stats |
 | GET    | `/api/trades`       | Paginated closed trades (`limit`, `offset`) |
 | GET    | `/api/report`       | HTML / CSV / JSON report (`format`, `download`) |
 | GET    | `/api/logs`         | Download bot activity log + collected dataset as JSONL (`download`, `dataset=0`) |
-| POST   | `/api/settings`     | Save settings (`{ settings: {...} }` or a flat object) |
-| POST   | `/api/coinglass/key`| Set `{ apiKey }` or clear `{ clear: true }` the CoinGlass key |
+| POST   | `/api/settings`     | Save settings (`{ settings: {...}, strategy? }` or a flat object) |
+| POST   | `/api/coinglass/key`| Set `{ apiKey }` or clear `{ clear: true }` the shared CoinGlass key |
 | POST   | `/api/device/market`| Browser feed: `{ coins, merge, total, pages }` |
-| POST   | `/api/control`      | `start`, `pause`, `toggle`, `reset`, `close-all` |
+| POST   | `/api/control`      | `start`, `pause`, `toggle`, `reset`, `close-all`, `start-all`, `pause-all`, `close-all-strategies` |
 | POST   | `/api/scan`         | Manual scan (dry-run while paused) |
 | POST   | `/api/trade/open`   | `{ symbol, force }` manual paper entry |
-| POST   | `/api/trade/close`  | `{ id, reason }` manual close |
+| POST   | `/api/trade/close`  | `{ id, reason }` manual close (the account is found automatically) |
 
 ---
 
@@ -438,16 +444,20 @@ settings normalisation, report rendering, position sizing and engine close paths
 
 ## Persistence
 
-- State lives in `data/state.json` (or `$DATA_DIR/state.json`).
+- Portfolio config lives in `data/strategies/index.json`; each strategy has its own
+  snapshot at `data/strategies/<id>.json`.
+- The old single-account `data/state.json` is adopted automatically as the
+  `main` strategy on first boot of V3. It is kept in place, so no history is lost.
 - Writes are debounced (500 ms) and flushed atomically via a temp file.
-- A corrupt state file is renamed to `state.json.corrupt-<timestamp>` and a fresh
-  account is created.
-- The bot always loads **paused** after a restart locally. Open paper positions
-  are restored and managed, but no new trades open until you press Start. On
-  Cloudflare the Durable Object resumes a run that was active before eviction.
-- **Reset** keeps your settings and clears trades/PnL/history.
-- Changing **Total fund** resets the paper account because the fund defines the
-  run.
+- A corrupt strategy file is renamed to `<file>.corrupt-<timestamp>` and a fresh
+  account is created for that strategy only.
+- The bot always loads **paused** after a local restart. Open paper positions are
+  restored and managed, but no new trades open until you press Start.
+- **Reset** keeps the strategy's settings and clears its trades/PnL/history.
+- Changing **Total fund** resets that paper account because the fund defines the
+  run. Other strategies are unaffected.
+- Deleting a strategy removes its snapshot file and index entry; the last
+  remaining strategy cannot be deleted.
 
 ---
 
@@ -457,7 +467,8 @@ The local server attaches a read-only logger after the engine starts. It never
 changes filters, sizing, positions or execution; it only listens to the existing
 `trade` events and samples state once per second while a position is open.
 
-Each trade gets its own folder under `data/ai-dataset/`:
+Each trade gets its own folder under `data/ai-dataset/<strategy-id>/` (one
+observer per strategy, so accounts stay separate):
 
 ```
 data/ai-dataset/
@@ -504,8 +515,8 @@ GET /api/logs?download=1
 GET /api/logs?download=1&dataset=0   :: activity log only
 ```
 
-On the Cloudflare deployment the endpoint returns the activity log only, because
-Workers have no filesystem for the dataset folders.
+On the static browser deployment the endpoint returns the activity log only, because
+the Web Worker has no filesystem for the dataset folders.
 
 Environment variables (optional):
 
@@ -515,54 +526,24 @@ Environment variables (optional):
 | `AI_DATASET_DIR` | `data/ai-dataset` | Where trade folders are written |
 | `AI_TRADE_INTERVAL_MS` | `1000` | Sampling interval (minimum 250 ms) |
 
-The logger is local-only. It is not attached in the Cloudflare Worker, where
-there is no filesystem; runtime state there remains in Durable Object storage.
+The logger is local-only. It is not attached in the static Web Worker, where
+there is no filesystem; runtime state there remains in IndexedDB.
 
 ---
 
-## Cloudflare deployment (24/7)
+## Static browser deployment
 
-The bot can run entirely on Cloudflare, so the dashboard is reachable at any
-time and the engine keeps scanning even when your computer is off.
+`npm run build` produces a self-contained `dist/` folder that can be hosted on any
+static file server. In that mode the dashboard runs the engine inside a dedicated
+Web Worker and persists state in IndexedDB, so no backend process is needed.
 
-**Live dashboard:** <https://oi-sniper.ashogexplore.workers.dev>
-
-Architecture:
-
-```
-Browser ──► Worker (cf/index.js)
-              ├── /api/*  ──► EngineDO (one Durable Object, named "main")
-              │                 ├── engine state in DO SQLite storage
-              │                 └── scanning/pricing via DO alarms
-              └── everything else ──► env.ASSETS (public/)
-```
-
-- `cf/do.js` - Durable Object router, mirrors the local JSON API and resumes a
-  running bot after eviction.
-- `cf/store.js` - storage adapter so the engine persists to DO storage instead
-  of `data/state.json`.
-- `cf/timers.js` - maps the engine's `setTimeout`/`clearTimeout` onto the single
-  Durable Object alarm.
-- `wrangler.jsonc` - Worker, assets binding, DO binding and SQLite migration.
-
-Commands:
-
-```bat
-npm.cmd run cloud:deploy     :: deploy to Cloudflare
-npm.cmd run cloud:tail       :: stream live logs
-```
-
-Notes:
-
-- CoinGlass, Binance, MEXC and Bitget reject Cloudflare's egress IPs (`403`).
-  Cloud spot pricing falls back to OKX / Bybit / Gate / KuCoin; CoinGlass signals
-  come from the browser device feed (tab open) or the optional API key.
-- State and the stored key live in the Durable Object, not in the Worker bundle.
-- The free Workers plan supports this stack (one Durable Object, SQLite-backed),
-  but only if the request budget above is respected.
-- A Durable Object keeps running the code version it started with, so after
-  changing engine code bump `ENGINE_GENERATION` in `cf/build.js`. That starts a
-  fresh paper account; settings and the API key must be re-entered.
+- The static build is single-account: the Web Worker runtime does not host the
+  multi-strategy `Portfolio` yet.
+- Run the local Node server (`npm start`) to use the multi-strategy dashboard and
+  the `/api/strategies` endpoints.
+- CoinGlass signals come from the browser device feed (tab open) or the optional
+  API key; exchange pricing uses the public venue APIs.
+- State and stored credentials live in the browser profile, not in the bundle.
 
 ### Cloudflare MCP server
 
@@ -589,16 +570,18 @@ Open `/mcps` in OpenCode → `cloudflare-api` → sign in. The server endpoint i
 ## Project structure
 
 ```
-server.js              zero-dependency HTTP server + JSON API
-cf/index.js            Cloudflare Worker entry (API → DO, else static assets)
-cf/do.js               Durable Object: engine host + HTTP API
-cf/store.js            Durable Object storage adapter
-cf/timers.js           alarm-backed setTimeout/clearTimeout
-wrangler.jsonc         Cloudflare bindings + migrations
+scripts/server.js      zero-dependency local HTTP server + JSON API
+scripts/build.js       copies public/, web/ and src/ into dist/ and builds the dashboard
+web/worker.js          browser Web Worker runtime (single-account static mode)
+web/api.js             worker RPC client; prefers the Node API when it is reachable
+web/routes.js          worker-side /api/* handlers
+web/store-idb.js       IndexedDB persistence for the browser runtime
 src/coinglass.js       encrypted CoinGlass fetch/decrypt + official API client
 src/exchanges.js       multi-venue discovery, symbol resolution, quotes
+src/marketFeed.js      shared CoinGlass cache, device feed and connection status
+src/portfolio.js       multi-strategy lifecycle, persistence and API payloads
 src/trading.js         pure filters, levels, PnL, stats, positionAction
-src/engine.js          scan loop, trade opening, position management, persistence
+src/engine.js          per-strategy scan loop, trades, positions, persistence
 src/core/reentryGuard.js  per-coin 12h lock from trade history + live positions
 src/aiDataset.js       passive AI trade dataset logger (observer only)
 src/logExport.js       streams activity log + dataset as one downloadable JSONL
@@ -608,7 +591,8 @@ scripts/ai-export.mjs  streams the AI dataset into one JSONL file
 public/                dashboard (vanilla HTML/CSS/JS, no build step)
 dashboard/             React dashboard (Vite, served at /dashboard/)
 test/                  node:test suites
-data/state.json        local runtime state (created on first run, git-ignored)
+data/strategies/       portfolio index + one JSON snapshot per strategy (git-ignored)
+data/state.json        legacy single-account state, migrated as "main" (git-ignored)
 js/, home.html         local-only CoinGlass reference bundle (git-ignored)
 ```
 
@@ -616,8 +600,8 @@ js/, home.html         local-only CoinGlass reference bundle (git-ignored)
 
 ## Versioning
 
-- Releases are tagged `V1`, `V2`, ... on `main`.
-- `package.json` follows the same major (`V1` = `1.x.x`).
+- Releases are tagged `V1`, `V2`, `V3`, ... on `main`.
+- `package.json` follows the same major (`V1` = `1.x.x`, `V3` = `3.x.x`).
 - `CHANGELOG.md` records every release; add a new section before tagging.
 - Runtime state under `data/` and local secrets are never committed.
 
@@ -632,8 +616,10 @@ js/, home.html         local-only CoinGlass reference bundle (git-ignored)
 - CoinGlass is scraped from an undocumented internal endpoint by default. It can
   change or rate-limit without notice; the optional official API key avoids the
   scraper entirely.
-- On Cloudflare, CoinGlass blocks the scraper endpoint from Workers IPs, so the
-  cloud deployment needs the official API key for signals.
+- On the static browser deployment, CoinGlass and some venues can reject requests
+  from the browser's network; the device feed and the optional API key help.
+- The static browser deployment runs one account. Multi-strategy accounts need the
+  local Node server.
 - Public exchange endpoints can be geo-blocked (notably OKX on some networks).
 - Intra-tick gaps can fill stops at the mark price, which may be worse than the
   configured stop.

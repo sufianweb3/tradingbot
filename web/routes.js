@@ -15,7 +15,7 @@ import {
 } from "../src/vault.js";
 import { createVenueAdapter, SUPPORTED_VENUES } from "../src/venues/index.js";
 
-export const APP_VERSION = "2.0.0";
+export const APP_VERSION = "3.0.0";
 export const ENGINE_GENERATION = `v2-web-${APP_VERSION}`;
 
 function stamp() {
@@ -296,17 +296,17 @@ export async function handleRpcRequest({ path, method = "GET", body = {}, query 
     }
 
     case "/api/eqe": {
-      const symbol = body?.symbol || urlObj.searchParams.get("symbol") || "BTC";
-      const side = body?.side || urlObj.searchParams.get("side") || "long";
-      const notional = body?.notional ?? urlObj.searchParams.get("notional");
+      const symbol = body?.symbol || query.symbol || "BTC";
+      const side = body?.side || query.side || "long";
+      const notional = body?.notional ?? query.notional;
       const res = await engine.evaluateSymbolEqe(symbol, side, notional, body?.book || null);
       return { status: 200, data: res };
     }
 
     case "/api/route": {
-      const symbol = body?.symbol || urlObj.searchParams.get("symbol") || "BTC";
-      const side = body?.side || urlObj.searchParams.get("side") || "long";
-      const notional = body?.notional ?? urlObj.searchParams.get("notional");
+      const symbol = body?.symbol || query.symbol || "BTC";
+      const side = body?.side || query.side || "long";
+      const notional = body?.notional ?? query.notional;
       const res = await engine.evaluateSymbolRoute(symbol, side, notional, body?.candidates || null);
       return { status: 200, data: res };
     }

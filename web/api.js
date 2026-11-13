@@ -7,7 +7,7 @@
  * status.json kill switch & background throttling detection.
  */
 
-export const APP_VERSION = "2.0.0";
+export const APP_VERSION = "3.0.0";
 const LOCK_NAME = "oi-sniper-worker-lock";
 const BUS_NAME = "oi-sniper-bus";
 
@@ -21,8 +21,17 @@ const statusListeners = new Set();
 let wakeLock = null;
 let botRunning = false;
 let lockResolver = null;
+// When the dashboard is served by scripts/server.js the Node API is the source
+// of truth and already supports the multi-strategy portfolio. The browser
+// worker remains the fallback for a purely static deployment.
+let serverMode = false;
+
+export function isServerMode() {
+  return serverMode;
+}
 
 export function isLeaderTab() {
+  if (serverMode) return true;
   return isLeader;
 }
 
@@ -109,10 +118,52 @@ function stopWorker() {
 }
 
 export async function takeOverEngine() {
-  if (isLeader) return;
+  if (serverMode || isLeader) return;
   console.log("[api] Requesting engine take over from active leader...");
   if (bus) {
     bus.postMessage({ type: "TAKEOVER_REQUEST" });
+  }
+}
+
+async function serverFetch(path, options = {}) {
+  const method = options.method || "GET";
+  const init = { method, cache: "no-store", headers: {} };
+  if (options.body !== undefined) {
+    init.headers["content-type"] = "application/json";
+    init.body =
+      typeof options.body === "string" ? options.body : JSON.stringify(options.body);
+  }
+  const res = await fetch(path, init);
+  const type = res.headers.get("content-type") || "";
+  let data;
+  if (type.includes("application/json")) {
+    data = await res.json();
+  } else {
+    data = await res.text();
+  }
+  if (!res.ok) {
+    const err = new Error(
+      (data && typeof data === "object" && data.error) || `HTTP ${res.status}`
+    );
+    err.status = res.status;
+    err.payload = data;
+    throw err;
+  }
+  return data;
+}
+
+async function detectServerApi() {
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 1500);
+    const res = await fetch("/api/health", { cache: "no-store", signal: controller.signal });
+    clearTimeout(timer);
+    if (!res.ok) return false;
+    if (!(res.headers.get("content-type") || "").includes("application/json")) return false;
+    const data = await res.json();
+    return Boolean(data && data.ok === true && typeof data.strategies === "number");
+  } catch {
+    return false;
   }
 }
 
@@ -121,6 +172,10 @@ export async function api(path, options = {}) {
   if (path === "/status.json" || path.startsWith("/status.json?")) {
     const res = await fetch(path, { cache: "no-store" });
     return res.json();
+  }
+
+  if (serverMode) {
+    return serverFetch(path, options);
   }
 
   // If we are a secondary tab, route request via worker if leader, else proxy or alert
@@ -266,6 +321,18 @@ export async function initApi() {
       kind: "unsupported-browser",
       message: `Your browser is missing required features: ${missing.join(", ")}. Please use modern Chrome, Edge, or Firefox.`,
     });
+    return;
+  }
+
+  // A local Node server exposes the full multi-strategy API. Prefer it when it
+  // is reachable; the browser worker is only used for static hosting.
+  if (await detectServerApi()) {
+    serverMode = true;
+    isLeader = true;
+    setupBackgroundDriftMonitor();
+    pollStatusFile();
+    setInterval(pollStatusFile, 60000);
+    notifyStatus({ kind: "server", message: "" });
     return;
   }
 

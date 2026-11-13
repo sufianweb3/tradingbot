@@ -167,6 +167,94 @@ code { font-family: var(--mono); font-size: 11.5px; color: var(--blue); }
   border-right: 1px solid var(--line);
 }
 
+/* ------------------------------------------------------------------ */
+/* Multi-strategy bar                                                 */
+/* ------------------------------------------------------------------ */
+.strategy-bar {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  margin-top: 12px; padding: 10px 14px;
+  border: 1px solid var(--line); border-radius: 14px;
+  background: linear-gradient(180deg, rgba(17,26,38,.86), rgba(11,17,25,.86));
+}
+.strategy-bar-main { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 260px; }
+.strategy-bar-label {
+  display: flex; align-items: center; gap: 6px; flex: none;
+  color: var(--dim); font-size: 9.5px; font-weight: 800; letter-spacing: .9px; text-transform: uppercase;
+}
+.strategy-bar-label b {
+  min-width: 18px; text-align: center; padding: 1px 6px; border-radius: 999px;
+  color: var(--muted); background: var(--panel-2); border: 1px solid var(--line); font-size: 10px;
+}
+.strategy-tabs { display: flex; align-items: center; gap: 6px; overflow-x: auto; padding: 2px; min-width: 0; scrollbar-width: thin; }
+.strategy-chip {
+  appearance: none; display: inline-flex; align-items: center; gap: 7px; flex: none;
+  padding: 7px 11px; border-radius: 999px; cursor: pointer;
+  border: 1px solid var(--line-2); background: #0a111a; color: var(--muted);
+  font-size: 11.5px; font-weight: 650; transition: .15s ease; white-space: nowrap;
+}
+.strategy-chip:hover { color: var(--text); border-color: #31465e; transform: translateY(-1px); }
+.strategy-chip.active { color: var(--text); background: var(--green-soft); border-color: rgba(22,211,154,.42); box-shadow: 0 0 0 3px rgba(22,211,154,.07); }
+.strategy-chip .chip-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--dim); flex: none; }
+.strategy-chip.running .chip-dot { background: var(--green); box-shadow: 0 0 0 3px rgba(22,211,154,.14); animation: pulse 1.8s infinite; }
+.strategy-chip.stopped .chip-dot { background: var(--amber); }
+.strategy-chip .chip-pnl { font-size: 10.5px; color: var(--dim); }
+.strategy-chip.active .chip-pnl { color: inherit; }
+.strategy-bar-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.portfolio-summary {
+  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  width: 100%; padding-top: 8px; margin-top: 2px; border-top: 1px dashed rgba(38,56,77,.55);
+  color: var(--dim); font-size: 10.5px;
+}
+.pf-item { white-space: nowrap; }
+.pf-item b { color: var(--text); font-weight: 650; }
+
+/* ------------------------------------------------------------------ */
+/* Strategy comparison                                                */
+/* ------------------------------------------------------------------ */
+.compare-panel { border-color: rgba(74,168,255,.16); }
+.compare-wrap { max-height: 330px; }
+.compare-table tbody tr { cursor: pointer; }
+.compare-table tbody tr.selected { background: rgba(22,211,154,.07); box-shadow: inset 3px 0 0 var(--green); }
+.compare-table tbody tr.selected:hover { background: rgba(22,211,154,.1); }
+.strategy-name-cell b { display: block; font-size: 12px; }
+.strategy-name-cell small { display: block; color: var(--dim); font-size: 9px; margin-top: 1px; }
+.strategy-state {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 2px 8px; border-radius: 999px; font-size: 10px; font-weight: 750; letter-spacing: .3px;
+  background: #111a24; color: var(--dim); border: 1px solid var(--line);
+}
+.strategy-state i { width: 6px; height: 6px; border-radius: 50%; background: var(--dim); }
+.strategy-state.running { color: var(--green); background: var(--green-soft); border-color: rgba(22,211,154,.28); }
+.strategy-state.running i { background: var(--green); }
+.strategy-state.stopped { color: var(--amber); background: var(--amber-soft); border-color: rgba(246,183,60,.28); }
+.strategy-state.stopped i { background: var(--amber); }
+.strategy-row-actions { display: flex; gap: 5px; justify-content: flex-end; }
+
+/* ------------------------------------------------------------------ */
+/* Strategy dialog                                                    */
+/* ------------------------------------------------------------------ */
+.strategy-dialog {
+  width: min(560px, calc(100vw - 32px)); padding: 0; border: 1px solid var(--line-2);
+  border-radius: 16px; background: var(--panel-solid); color: var(--text);
+  box-shadow: 0 30px 90px rgba(0,0,0,.65);
+}
+.strategy-dialog::backdrop { background: rgba(2,6,11,.7); backdrop-filter: blur(3px); }
+.strategy-dialog form { margin: 0; }
+.dialog-head {
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 12px;
+  padding: 16px 18px 12px; border-bottom: 1px solid var(--line);
+}
+.dialog-head h2 { margin: 0; font-size: 16px; }
+.dialog-head .panel-sub { margin-top: 3px; }
+.dialog-body { display: flex; flex-direction: column; gap: 12px; padding: 16px 18px; }
+.dialog-body .field > span { font-size: 11px; }
+.dialog-body .switch-row { margin-top: 2px; }
+.dialog-foot {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 13px 18px; border-top: 1px solid var(--line); background: rgba(10,16,24,.7);
+}
+.dialog-foot-right { display: flex; gap: 8px; margin-left: auto; }
+
 .btn {
   appearance: none; border: 1px solid var(--line-2); background: var(--panel-2);
   color: var(--text); border-radius: 7px; padding: 6px 12px; font-size: 12px;
@@ -745,6 +833,10 @@ select { cursor: pointer; appearance: none; background-image: linear-gradient(45
   .field-grid { grid-template-columns: 1fr 1fr; }
   .search { width: 100%; }
   .scanner-tools { width: 100%; }
+  .strategy-bar-main { min-width: 0; width: 100%; }
+  .strategy-bar-actions { width: 100%; }
+  .strategy-bar-actions .btn { flex: 1; }
+  .portfolio-summary { gap: 10px; }
   .data-table { font-size: 11px; }
   .chart-wrap { padding: 6px; }
   #equityChart { height: 230px; }
